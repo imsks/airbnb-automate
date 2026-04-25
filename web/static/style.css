@@ -1,0 +1,467 @@
+/* Airbnb Automate - Dashboard Styles */
+
+:root {
+    --primary: #FF5A5F;
+    --primary-dark: #E04850;
+    --secondary: #00A699;
+    --dark: #484848;
+    --light: #767676;
+    --lighter: #EBEBEB;
+    --bg: #F7F7F7;
+    --white: #FFFFFF;
+    --success: #00A699;
+    --warning: #FFB400;
+    --danger: #FF5A5F;
+    --radius: 8px;
+    --shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: var(--bg);
+    color: var(--dark);
+    line-height: 1.6;
+}
+
+/* Navigation */
+.navbar {
+    background: var(--white);
+    padding: 1rem 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: var(--shadow);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.nav-brand a {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.nav-links {
+    display: flex;
+    gap: 1.5rem;
+    align-items: center;
+}
+
+.nav-links a {
+    color: var(--dark);
+    text-decoration: none;
+    font-weight: 500;
+    padding: 0.5rem 0;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+}
+
+.nav-links a:hover, .nav-links a.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+/* Container */
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+/* Buttons */
+.btn {
+    display: inline-block;
+    padding: 0.6rem 1.2rem;
+    border-radius: var(--radius);
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: var(--white);
+}
+
+.btn-primary:hover {
+    background: var(--primary-dark);
+}
+
+.btn-secondary {
+    background: var(--white);
+    color: var(--dark);
+    border: 1px solid var(--lighter);
+}
+
+.btn-secondary:hover {
+    border-color: var(--dark);
+}
+
+.btn-sm {
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8rem;
+}
+
+/* Stats Grid */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+}
+
+.stat-card {
+    background: var(--white);
+    padding: 1.5rem;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    text-align: center;
+}
+
+.stat-card.highlight {
+    border: 2px solid var(--success);
+}
+
+.stat-number {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--dark);
+}
+
+.stat-label {
+    font-size: 0.85rem;
+    color: var(--light);
+    margin-top: 0.3rem;
+}
+
+/* Campaign Grid */
+.campaign-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+}
+
+.campaign-card {
+    background: var(--white);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    box-shadow: var(--shadow);
+    position: relative;
+}
+
+.campaign-card h3 {
+    margin: 0.5rem 0;
+    font-size: 1.2rem;
+}
+
+.campaign-location, .campaign-dates, .campaign-meta {
+    color: var(--light);
+    font-size: 0.9rem;
+    margin: 0.3rem 0;
+}
+
+/* Status Badges */
+.badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.status-active, .outreach-sent {
+    background: #E8F5E9;
+    color: #2E7D32;
+}
+
+.status-paused, .outreach-pending {
+    background: #FFF3E0;
+    color: #E65100;
+}
+
+.status-completed, .outreach-accepted {
+    background: #E0F2F1;
+    color: #00695C;
+}
+
+.outreach-responded, .outreach-follow_up_sent {
+    background: #E3F2FD;
+    color: #1565C0;
+}
+
+.outreach-declined, .outreach-no_response {
+    background: #FFEBEE;
+    color: #C62828;
+}
+
+.superhost {
+    background: #FFE0B2;
+    color: #E65100;
+}
+
+.campaign-status {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+}
+
+/* Data Table */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--white);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+}
+
+.data-table th, .data-table td {
+    padding: 0.8rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--lighter);
+}
+
+.data-table th {
+    background: var(--bg);
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--light);
+    text-transform: uppercase;
+}
+
+.data-table tr:hover {
+    background: #FAFAFA;
+}
+
+/* Forms */
+.campaign-form {
+    max-width: 600px;
+    background: var(--white);
+    padding: 2rem;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+
+.form-group {
+    margin-bottom: 1.2rem;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+    font-size: 0.9rem;
+}
+
+.form-group input, .form-group select {
+    width: 100%;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--lighter);
+    border-radius: var(--radius);
+    font-size: 0.95rem;
+}
+
+.form-group input:focus, .form-group select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(255, 90, 95, 0.2);
+}
+
+.form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+.form-actions {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+/* Listings Grid */
+.listings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin: 1rem 0;
+}
+
+.listing-card {
+    background: var(--white);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+}
+
+.listing-photo {
+    width: 100%;
+    height: 180px;
+    object-fit: cover;
+}
+
+.listing-info {
+    padding: 1rem;
+}
+
+.listing-info h3 {
+    font-size: 1rem;
+    margin-bottom: 0.4rem;
+}
+
+.listing-host, .listing-meta {
+    font-size: 0.85rem;
+    color: var(--light);
+    margin: 0.2rem 0;
+}
+
+/* Campaign Detail */
+.campaign-detail .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1.5rem;
+}
+
+.campaign-detail .subtitle {
+    color: var(--light);
+    margin-top: 0.3rem;
+}
+
+.header-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.campaign-info {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--lighter);
+    margin-bottom: 2rem;
+}
+
+.section {
+    margin: 2rem 0;
+}
+
+.section h2 {
+    margin-bottom: 1rem;
+}
+
+/* Message Preview */
+.message-preview summary {
+    cursor: pointer;
+    list-style: none;
+}
+
+.message-text {
+    max-width: 500px;
+    white-space: pre-wrap;
+    background: var(--bg);
+    padding: 1rem;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+    line-height: 1.5;
+}
+
+/* Alerts */
+.alerts {
+    margin-bottom: 1.5rem;
+}
+
+.alert {
+    padding: 0.8rem 1.2rem;
+    border-radius: var(--radius);
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+}
+
+.alert-success {
+    background: #E8F5E9;
+    color: #2E7D32;
+}
+
+.alert-error {
+    background: #FFEBEE;
+    color: #C62828;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 3rem;
+    color: var(--light);
+}
+
+.empty-state .btn {
+    margin-top: 1rem;
+}
+
+/* Page Header */
+.page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+
+/* Filter Bar */
+.filter-bar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 2rem;
+    color: var(--light);
+    font-size: 0.85rem;
+}
+
+/* Status select in outreach table */
+.data-table select {
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--lighter);
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .navbar {
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .form-row {
+        grid-template-columns: 1fr;
+    }
+
+    .campaign-detail .page-header {
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}

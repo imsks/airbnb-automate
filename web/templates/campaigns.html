@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Campaigns — Airbnb Automate{% endblock %}
+
+{% block content %}
+<div class="campaigns-page">
+    <div class="page-header">
+        <h1>🎯 Campaigns</h1>
+        <a href="/campaigns/new" class="btn btn-primary">+ New Campaign</a>
+    </div>
+
+    <div class="filter-bar">
+        <a href="/campaigns" class="btn btn-sm {% if not request.args.get('status') %}active{% endif %}">All</a>
+        <a href="/campaigns?status=active" class="btn btn-sm {% if request.args.get('status') == 'active' %}active{% endif %}">Active</a>
+        <a href="/campaigns?status=paused" class="btn btn-sm {% if request.args.get('status') == 'paused' %}active{% endif %}">Paused</a>
+        <a href="/campaigns?status=completed" class="btn btn-sm {% if request.args.get('status') == 'completed' %}active{% endif %}">Completed</a>
+    </div>
+
+    {% if campaigns %}
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Location</th>
+                <th>Dates</th>
+                <th>Guests</th>
+                <th>Price Range</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for campaign in campaigns %}
+            <tr>
+                <td><strong>{{ campaign.name }}</strong></td>
+                <td>📍 {{ campaign.location }}</td>
+                <td>{{ campaign.checkin }} → {{ campaign.checkout }}</td>
+                <td>{{ campaign.guests }}</td>
+                <td>${{ campaign.min_price }}–${{ campaign.max_price }}</td>
+                <td>
+                    <span class="badge status-{{ campaign.status.value }}">
+                        {{ campaign.status.value }}
+                    </span>
+                </td>
+                <td>
+                    <a href="/campaigns/{{ campaign.id }}" class="btn btn-sm btn-secondary">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+        <p>No campaigns found.</p>
+        <a href="/campaigns/new" class="btn btn-primary">+ Create Campaign</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
