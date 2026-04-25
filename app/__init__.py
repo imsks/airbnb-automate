@@ -1,1 +1,1 @@
-"""Airbnb Automate - Content Creator Outreach Automation."""
+"""Airbnb Automate - Find Airbnb Listings."""

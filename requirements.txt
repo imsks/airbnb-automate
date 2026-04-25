@@ -1,14 +1,8 @@
 # Core dependencies
 flask==3.1.1
 playwright==1.52.0
-apscheduler==3.11.0
-pyyaml==6.0.2
 python-dotenv==1.1.0
 jinja2==3.1.6
-
-# HTTP & utilities
-httpx==0.28.1
-beautifulsoup4==4.13.4
 
 # Data handling
 pydantic==2.11.3

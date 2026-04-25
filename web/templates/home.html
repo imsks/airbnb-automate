@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Airbnb Automate — Find Listings{% endblock %}
+
+{% block content %}
+<div class="hero">
+    <h1>🏠 Find Airbnb Listings</h1>
+    <p class="hero-subtitle">Enter a location to search for Airbnb stays. Optional filters help narrow results.</p>
+</div>
+
+<form method="POST" action="/search" class="search-form">
+    <div class="form-group">
+        <label for="location">Location *</label>
+        <input type="text" id="location" name="location" required
+               placeholder="e.g., Goa, India" autofocus>
+    </div>
+
+    <details class="preferences-toggle">
+        <summary>Preferences (optional)</summary>
+        <div class="preferences-grid">
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="checkin">Check-in</label>
+                    <input type="date" id="checkin" name="checkin">
+                </div>
+                <div class="form-group">
+                    <label for="checkout">Check-out</label>
+                    <input type="date" id="checkout" name="checkout">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="guests">Guests</label>
+                    <input type="number" id="guests" name="guests" value="2" min="1" max="16">
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="min_price">Min Price ($/night)</label>
+                    <input type="number" id="min_price" name="min_price" min="0" placeholder="Any">
+                </div>
+                <div class="form-group">
+                    <label for="max_price">Max Price ($/night)</label>
+                    <input type="number" id="max_price" name="max_price" min="0" placeholder="Any">
+                </div>
+            </div>
+        </div>
+    </details>
+
+    <div class="form-actions">
+        <button type="submit" class="btn btn-primary btn-lg">🔍 Search</button>
+    </div>
+</form>
+
+{% if searches %}
+<section class="past-searches">
+    <h2>Past Searches</h2>
+    <div class="searches-list">
+        {% for search in searches %}
+        <a href="/search/{{ search.id }}" class="search-card">
+            <div class="search-card-main">
+                <span class="search-location">📍 {{ search.location }}</span>
+                <span class="badge status-{{ search.status.value }}">{{ search.status.value }}</span>
+            </div>
+            <div class="search-card-meta">
+                {% if search.checkin %}📅 {{ search.checkin }}{% if search.checkout %} → {{ search.checkout }}{% endif %}{% endif %}
+                {% if search.listings_count > 0 %}· {{ search.listings_count }} listings{% endif %}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}{{ search.location }} — Results{% endblock %}
+
+{% block content %}
+<div class="results-page">
+    <div class="results-header">
+        <a href="/" class="btn btn-secondary">← Back</a>
+        <div>
+            <h1>📍 {{ search.location }}</h1>
+            <p class="results-meta">
+                {% if search.checkin %}📅 {{ search.checkin }}{% if search.checkout %} → {{ search.checkout }}{% endif %} · {% endif %}
+                👥 {{ search.guests }} guests
+                {% if search.min_price is not none or search.max_price is not none %}
+                · 💰 {% if search.min_price is not none %}${{ search.min_price|int }}{% else %}$0{% endif %}–{% if search.max_price is not none %}${{ search.max_price|int }}{% else %}any{% endif %}/night
+                {% endif %}
+            </p>
+        </div>
+        <span class="badge status-{{ search.status.value }}">{{ search.status.value }}</span>
+    </div>
+
+    {% if search.status.value == 'failed' %}
+    <div class="empty-state">
+        <p>😞 This search failed. Try again with a different location or check your internet connection.</p>
+        <a href="/" class="btn btn-primary">Try Again</a>
+    </div>
+    {% elif listings %}
+    <p class="results-count">Found <strong>{{ listings|length }}</strong> listings</p>
+    <div class="listings-grid">
+        {% for listing in listings %}
+        <div class="listing-card">
+            {% if listing.photo_url %}
+            <img src="{{ listing.photo_url }}" alt="{{ listing.title }}" class="listing-photo">
+            {% else %}
+            <div class="listing-photo-placeholder">🏠</div>
+            {% endif %}
+            <div class="listing-info">
+                <h3>{{ listing.title or 'Airbnb Listing' }}</h3>
+                <p class="listing-host">
+                    Hosted by {{ listing.host_name or 'Unknown' }}
+                    {% if listing.superhost %}<span class="badge superhost">★ Superhost</span>{% endif %}
+                </p>
+                <p class="listing-meta">
+                    {% if listing.rating %}⭐ {{ listing.rating }}{% if listing.review_count %} ({{ listing.review_count }} reviews){% endif %} · {% endif %}
+                    💰 ${{ listing.price_per_night|int }}/night
+                </p>
+                {% if listing.url %}
+                <a href="{{ listing.url }}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">View on Airbnb →</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No listings found for this search. Try broadening your criteria.</p>
+        <a href="/" class="btn btn-primary">New Search</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

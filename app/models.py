@@ -9,24 +9,12 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
-class OutreachStatus(str, Enum):
-    """Status of outreach to a host."""
+class SearchStatus(str, Enum):
+    """Status of a search."""
 
-    PENDING = "pending"
-    SENT = "sent"
-    FOLLOW_UP_SENT = "follow_up_sent"
-    RESPONDED = "responded"
-    ACCEPTED = "accepted"
-    DECLINED = "declined"
-    NO_RESPONSE = "no_response"
-
-
-class CampaignStatus(str, Enum):
-    """Status of a campaign."""
-
-    ACTIVE = "active"
-    PAUSED = "paused"
+    SEARCHING = "searching"
     COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class Listing(BaseModel):
@@ -51,37 +39,16 @@ class Listing(BaseModel):
     scraped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class Campaign(BaseModel):
-    """A search campaign targeting a specific location and date range."""
+class Search(BaseModel):
+    """A search request for Airbnb listings."""
 
     id: Optional[int] = None
-    name: str = ""
     location: str = ""
     checkin: str = ""
     checkout: str = ""
     guests: int = 2
-    min_price: float = 0.0
-    max_price: float = 500.0
-    property_types: list[str] = Field(default_factory=list)
-    amenities: list[str] = Field(default_factory=list)
-    max_listings: int = 20
-    status: CampaignStatus = CampaignStatus.ACTIVE
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class Outreach(BaseModel):
-    """An outreach record tracking communication with a host."""
-
-    id: Optional[int] = None
-    campaign_id: int = 0
-    listing_id: str = ""
-    host_name: str = ""
-    listing_title: str = ""
-    listing_url: str = ""
-    message: str = ""
-    status: OutreachStatus = OutreachStatus.PENDING
-    sent_at: Optional[datetime] = None
-    follow_up_count: int = 0
-    last_follow_up_at: Optional[datetime] = None
-    response: str = ""
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
+    status: SearchStatus = SearchStatus.SEARCHING
+    listings_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
