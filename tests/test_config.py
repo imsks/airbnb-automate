@@ -47,9 +47,18 @@ def test_get_browser_user_agent_set(monkeypatch):
     assert get_browser_user_agent() == "Mozilla/5.0 (Custom)"
 
 
-def test_get_browser_user_data_dir_unset(monkeypatch):
+def test_get_browser_user_data_dir_default(monkeypatch):
     monkeypatch.delenv("BROWSER_USER_DATA_DIR", raising=False)
-    assert get_browser_user_data_dir() is None
+    result = get_browser_user_data_dir()
+    # Now defaults to data/airbnb_browser_profile under BASE_DIR
+    assert result != ""
+    assert result.endswith("airbnb_browser_profile")
+    assert Path(result).is_absolute()
+
+
+def test_get_browser_user_data_dir_disabled(monkeypatch):
+    monkeypatch.setenv("BROWSER_USER_DATA_DIR", "none")
+    assert get_browser_user_data_dir() == ""
 
 
 def test_get_browser_user_data_dir_relative(monkeypatch):

@@ -37,6 +37,9 @@ body {
     position: sticky;
     top: 0;
     z-index: 100;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
 .nav-brand a {
@@ -366,6 +369,63 @@ body {
 
 .empty-state .btn {
     margin-top: 1rem;
+}
+
+/* Login */
+.nav-actions {
+    display: flex;
+    align-items: center;
+}
+
+.nav-login-form {
+    display: inline;
+}
+
+.btn-login {
+    background: var(--secondary);
+    color: var(--white);
+    border: none;
+}
+
+.btn-login:hover {
+    background: #008F84;
+}
+
+.btn-login:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.login-warning {
+    background: #FFF8E1;
+    border: 1px solid #FFE082;
+    border-radius: var(--radius);
+    padding: 1rem 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.login-warning-content {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.login-warning-content p {
+    flex: 1;
+    min-width: 200px;
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+.login-hint {
+    font-size: 0.8rem;
+    color: var(--light);
+    margin-top: 0.5rem;
+}
+
+.inline-form {
+    display: inline;
 }
 
 /* Footer */

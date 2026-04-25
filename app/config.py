@@ -39,16 +39,24 @@ def get_playwright_channel() -> Optional[str]:
     return raw
 
 
-def get_browser_user_data_dir() -> Optional[str]:
-    """Optional persistent profile directory for Playwright (Chrome user-data).
+DEFAULT_BROWSER_USER_DATA_DIR = "data/airbnb_browser_profile"
 
-    If set, outreach uses launch_persistent_context so cookies live under this
-    path (e.g. data/airbnb_browser_profile). Use a *dedicated* directory — do
-    not point at your live Chrome profile while Google Chrome is running (profile lock).
+
+def get_browser_user_data_dir() -> str:
+    """Persistent profile directory for Playwright (Chrome user-data).
+
+    Defaults to ``data/airbnb_browser_profile`` so that login sessions are
+    automatically preserved between runs.  Set BROWSER_USER_DATA_DIR to
+    override, or set it to ``none`` to disable (not recommended).
+
+    Use a *dedicated* directory — do not point at your live Chrome profile
+    while Google Chrome is running (profile lock).
     """
     raw = (os.getenv("BROWSER_USER_DATA_DIR") or "").strip()
+    if raw.lower() == "none":
+        return ""
     if not raw:
-        return None
+        raw = DEFAULT_BROWSER_USER_DATA_DIR
     path = (BASE_DIR / raw).resolve() if not os.path.isabs(raw) else Path(raw)
     return str(path)
 

@@ -19,13 +19,15 @@ from app.database import (
     get_outreach_messages,
 )
 from app.models import Search, SearchStatus
-from app.outreach import run_outreach_sync
+from app.outreach import login_to_airbnb_sync, run_outreach_sync
 from app.scraper import scrape_listings_sync
 
 logger = logging.getLogger(__name__)
 
-# Track running outreach processes
+# Track running background processes
 _outreach_threads: dict[int, threading.Thread] = {}
+_login_thread: dict[str, threading.Thread] = {}
+_login_result: dict[str, bool | None] = {"status": None}
 
 
 def create_app() -> Flask:
@@ -40,11 +42,61 @@ def create_app() -> Flask:
     # Initialize database
     init_db()
 
+    # --- Login Routes ---
+
+    @app.route("/login/airbnb", methods=["POST"])
+    def airbnb_login():
+        """Open a browser for the user to log in to Airbnb."""
+        # Check if already running
+        if "login" in _login_thread and _login_thread["login"].is_alive():
+            flash("Login browser is already open. Complete the login there.", "warning")
+            return redirect(request.referrer or url_for("home"))
+
+        _login_result["status"] = None
+
+        def _run():
+            try:
+                result = login_to_airbnb_sync()
+                _login_result["status"] = result
+            except Exception as e:
+                logger.error("Login failed: %s", e)
+                _login_result["status"] = False
+
+        thread = threading.Thread(target=_run, daemon=True)
+        _login_thread["login"] = thread
+        thread.start()
+
+        flash(
+            "🔐 Browser opened — log in to Airbnb there. "
+            "The session will be saved automatically.",
+            "success",
+        )
+        return redirect(request.referrer or url_for("home"))
+
+    @app.route("/api/login/status")
+    def api_login_status():
+        """API endpoint for login status (used by polling UI)."""
+        running = "login" in _login_thread and _login_thread["login"].is_alive()
+        return jsonify({
+            "running": running,
+            "logged_in": _login_result.get("status"),
+        })
+
+    # --- Search Routes ---
+
     @app.route("/")
     def home():
         """Landing page with search form and past searches."""
         searches = get_searches()
-        return render_template("home.html", searches=searches)
+        login_running = (
+            "login" in _login_thread and _login_thread["login"].is_alive()
+        )
+        return render_template(
+            "home.html",
+            searches=searches,
+            login_running=login_running,
+            login_status=_login_result.get("status"),
+        )
 
     @app.route("/search", methods=["POST"])
     def search():
@@ -114,6 +166,10 @@ def create_app() -> Flask:
             and _outreach_threads[search_id].is_alive()
         )
 
+        login_running = (
+            "login" in _login_thread and _login_thread["login"].is_alive()
+        )
+
         return render_template(
             "results.html",
             search=search_record,
@@ -122,6 +178,8 @@ def create_app() -> Flask:
             outreach_messages=outreach_messages,
             outreach_running=outreach_running,
             message_template=message_template,
+            login_running=login_running,
+            login_status=_login_result.get("status"),
         )
 
     @app.route("/search/<int:search_id>/outreach", methods=["POST"])
@@ -161,7 +219,7 @@ def create_app() -> Flask:
         _outreach_threads[search_id] = thread
         thread.start()
 
-        flash("🚀 Outreach started! A browser will open — log in to Airbnb if prompted.", "success")
+        flash("🚀 Outreach started! Messages will be sent using your saved Airbnb session.", "success")
         return redirect(url_for("outreach_status", search_id=search_id))
 
     @app.route("/search/<int:search_id>/outreach/status")

@@ -41,6 +41,28 @@
             🚀 Outreach is running! <a href="/search/{{ search.id }}/outreach/status">View live progress →</a>
         </div>
         {% else %}
+
+        <!-- Login Status Warning -->
+        {% if login_status is none or login_status == false %}
+        <div class="login-warning">
+            <div class="login-warning-content">
+                <p>⚠️ <strong>Login required before outreach.</strong> You need to log in to Airbnb first so the app can send messages on your behalf.</p>
+                <form method="POST" action="/login/airbnb" class="inline-form">
+                    <button type="submit" class="btn btn-login btn-sm" {% if login_running %}disabled{% endif %}>
+                        {% if login_running %}
+                        ⏳ Browser open — log in there...
+                        {% else %}
+                        🔐 Login to Airbnb
+                        {% endif %}
+                    </button>
+                </form>
+            </div>
+            <p class="login-hint">A browser window will open. Log in normally (email, Google, Apple — all work). Your session is saved for future use.</p>
+        </div>
+        {% elif login_status == true %}
+        <div class="alert alert-success">✅ Logged in to Airbnb — ready to send messages!</div>
+        {% endif %}
+
         <form method="POST" action="/search/{{ search.id }}/outreach" class="outreach-form">
             <details class="message-preview-toggle">
                 <summary>✏️ Preview / Edit Message Template</summary>
@@ -68,7 +90,7 @@
                 🚀 Start Outreach ({{ listings|length }} hosts)
             </button>
             <p class="outreach-note">
-                A browser will open. Log in to Airbnb if prompted — then messages are sent automatically.
+                Uses your saved Airbnb session. Make sure you've logged in first!
             </p>
         </form>
         {% endif %}

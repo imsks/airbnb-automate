@@ -35,18 +35,20 @@ That's it! The landing page lets you enter a location and optional preferences (
 2. **Add optional preferences** — check-in/out dates, guests, price range
 3. **Hit Search** — the app scrapes Airbnb listings matching your criteria
 4. **View results** — listings are saved to the database and displayed in the UI
-5. **Start Outreach** — click the outreach button to send personalized messages to all hosts
-6. **Track progress** — watch messages get sent in real-time on the outreach status page
+5. **Login to Airbnb** — click "🔐 Login to Airbnb" (one-time step, session is saved)
+6. **Start Outreach** — click the outreach button to send personalized messages to all hosts
+7. **Track progress** — watch messages get sent in real-time on the outreach status page
 
 ### 📨 Outreach Flow
 
 The outreach system automates sending personalized messages to Airbnb hosts:
 
-1. After a search, click **"🚀 Start Outreach"** on the results page
-2. A browser window opens (non-headless) — **log in to Airbnb** if prompted
-3. The app visits each listing and sends your personalized message to the host
-4. Session is saved so you don't need to log in every time
-5. Track sent/pending/failed status in real-time
+1. **Login first** — click **"🔐 Login to Airbnb"** in the navbar or on the results page. A browser opens; log in normally (email, Google, Apple — all work). Your session is saved in a persistent browser profile (`data/airbnb_browser_profile/`).
+2. **Start outreach** — click **"🚀 Start Outreach"** on the results page. The app reuses your saved session — no login prompt during messaging.
+3. The app visits each listing, clicks "Contact Host", types your personalized message, and sends it.
+4. Track sent/pending/failed status in real-time.
+
+> **Why a separate login step?** Airbnb blocks automated logins. By logging in once in a dedicated browser, your session persists on disk. Outreach then reuses it without hitting login issues.
 
 The default message introduces you as a content creator offering to create content in exchange for stays. You can customize the message template from the UI before starting outreach.
 
@@ -88,8 +90,8 @@ airbnb-automate/
 | `FLASK_SECRET_KEY` | Session secret | dev-secret-key |
 | `DATABASE_PATH` | SQLite DB path | data/airbnb_automate.db |
 | `HEADLESS` | Run browser headless (scraping only) | true |
-| `PLAYWRIGHT_CHANNEL` | Use installed `chrome` or `msedge` instead of bundled Chromium (helps Airbnb login) | (bundled Chromium) |
-| `BROWSER_USER_DATA_DIR` | Persistent profile path (e.g. `data/airbnb_chrome_profile`); do not use your main Chrome profile while Chrome is open | (session in `data/browser_state.json`) |
+| `PLAYWRIGHT_CHANNEL` | Use installed `chrome` or `msedge` instead of bundled Chromium (helps if OAuth login fails) | (bundled Chromium) |
+| `BROWSER_USER_DATA_DIR` | Persistent profile path for login sessions; set to `none` to disable | `data/airbnb_browser_profile` |
 | `BROWSER_USER_AGENT` | Force a custom User-Agent (rarely needed) | (browser default) |
 | `OUTREACH_MESSAGE` | Custom outreach message template | Built-in template |
 
@@ -104,4 +106,4 @@ python -m pytest tests/ -v
 
 - **Airbnb ToS**: Automated scraping and messaging may violate Airbnb's Terms of Service. Use responsibly.
 - **Browser Required**: The scraper uses Playwright with Chromium. Run `playwright install chromium` after installing dependencies.
-- **Login Required for Outreach**: The outreach feature requires you to be logged in to Airbnb. The browser opens non-headless so you can log in manually. **If login fails in the opened window** (Google/Apple/captcha, or “unsupported browser”), set `PLAYWRIGHT_CHANNEL=chrome` in `.env` so the app uses your installed Google Chrome, then restart. Session is stored in `data/browser_state.json`, or in the folder from `BROWSER_USER_DATA_DIR` if you set it.
+- **Login Required for Outreach**: Click **"Login to Airbnb"** in the web UI before starting outreach. The app stores your session in a persistent browser profile at `data/airbnb_browser_profile/`. If Google/Apple OAuth does not work in the bundled Chromium, set `PLAYWRIGHT_CHANNEL=chrome` in `.env` to use your installed Google Chrome instead.
