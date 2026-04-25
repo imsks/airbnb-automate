@@ -17,8 +17,8 @@ AIRBNB_BASE_URL = "https://www.airbnb.com"
 
 def build_search_url(
     location: str,
-    checkin: str,
-    checkout: str,
+    checkin: Optional[str] = None,
+    checkout: Optional[str] = None,
     guests: int = 2,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
@@ -27,8 +27,8 @@ def build_search_url(
 
     Args:
         location: Search location (e.g., "Goa, India")
-        checkin: Check-in date in YYYY-MM-DD format
-        checkout: Check-out date in YYYY-MM-DD format
+        checkin: Check-in date in YYYY-MM-DD format (optional)
+        checkout: Check-out date in YYYY-MM-DD format (optional)
         guests: Number of guests
         min_price: Minimum price per night (optional)
         max_price: Maximum price per night (optional)
@@ -38,11 +38,13 @@ def build_search_url(
     """
     params = [
         f"query={quote_plus(location)}",
-        f"checkin={checkin}",
-        f"checkout={checkout}",
         f"adults={guests}",
     ]
 
+    if checkin:
+        params.append(f"checkin={checkin}")
+    if checkout:
+        params.append(f"checkout={checkout}")
     if min_price is not None:
         params.append(f"price_min={int(min_price)}")
     if max_price is not None:
@@ -161,8 +163,8 @@ async def _parse_listing_card(card, location: str) -> Optional[Listing]:
 
 async def scrape_listings(
     location: str,
-    checkin: str,
-    checkout: str,
+    checkin: Optional[str] = None,
+    checkout: Optional[str] = None,
     guests: int = 2,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
@@ -176,8 +178,8 @@ async def scrape_listings(
 
     Args:
         location: Search location
-        checkin: Check-in date (YYYY-MM-DD)
-        checkout: Check-out date (YYYY-MM-DD)
+        checkin: Check-in date (YYYY-MM-DD) (optional)
+        checkout: Check-out date (YYYY-MM-DD) (optional)
         guests: Number of guests
         min_price: Minimum price filter
         max_price: Maximum price filter
@@ -254,8 +256,8 @@ async def scrape_listings(
 
 def scrape_listings_sync(
     location: str,
-    checkin: str,
-    checkout: str,
+    checkin: Optional[str] = None,
+    checkout: Optional[str] = None,
     guests: int = 2,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,

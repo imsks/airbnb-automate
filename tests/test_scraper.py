@@ -41,3 +41,13 @@ def test_build_search_url_no_price():
     )
     assert "price_min" not in url
     assert "price_max" not in url
+
+
+def test_build_search_url_location_only():
+    """Test search URL with only location (no dates)."""
+    url = build_search_url(location="Tokyo, Japan")
+    assert "airbnb.com" in url
+    assert "Tokyo" in url
+    assert "checkin" not in url
+    assert "checkout" not in url
+    assert "adults=2" in url

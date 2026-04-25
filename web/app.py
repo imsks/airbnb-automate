@@ -1,24 +1,23 @@
-"""Flask web dashboard for Airbnb Automate."""
+"""Flask web app for Airbnb Automate."""
 
+import logging
 import os
-from datetime import datetime
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 
-from app.config import load_config, get_creator_profile
 from app.database import (
     init_db,
-    create_campaign,
-    get_campaigns,
-    get_campaign,
+    create_search,
+    get_search,
+    get_searches,
     get_listings,
-    get_outreach_for_campaign,
-    get_outreach_stats,
-    update_campaign_status,
-    update_outreach_status,
+    save_listings,
+    update_search_status,
 )
-from app.models import Campaign, CampaignStatus, OutreachStatus
-from app.scheduler import run_campaign, start_scheduler, stop_scheduler
+from app.models import Search, SearchStatus
+from app.scraper import scrape_listings_sync
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> Flask:
@@ -34,109 +33,77 @@ def create_app() -> Flask:
     init_db()
 
     @app.route("/")
-    def dashboard():
-        """Main dashboard showing overview stats and campaigns."""
-        campaigns = get_campaigns()
-        stats = get_outreach_stats()
-        return render_template(
-            "dashboard.html",
-            campaigns=campaigns,
-            stats=stats,
-            now=datetime.utcnow(),
+    def home():
+        """Landing page with search form and past searches."""
+        searches = get_searches()
+        return render_template("home.html", searches=searches)
+
+    @app.route("/search", methods=["POST"])
+    def search():
+        """Run a new Airbnb search."""
+        location = request.form.get("location", "").strip()
+        if not location:
+            flash("Location is required.", "error")
+            return redirect(url_for("home"))
+
+        checkin = request.form.get("checkin", "")
+        checkout = request.form.get("checkout", "")
+        guests = int(request.form.get("guests", 2) or 2)
+        min_price = request.form.get("min_price", "")
+        max_price = request.form.get("max_price", "")
+
+        search_record = Search(
+            location=location,
+            checkin=checkin,
+            checkout=checkout,
+            guests=guests,
+            min_price=float(min_price) if min_price else None,
+            max_price=float(max_price) if max_price else None,
         )
+        search_id = create_search(search_record)
 
-    @app.route("/campaigns")
-    def campaigns_list():
-        """List all campaigns."""
-        status_filter = request.args.get("status")
-        if status_filter and status_filter != "all":
-            campaigns = get_campaigns(status=CampaignStatus(status_filter))
-        else:
-            campaigns = get_campaigns()
-        return render_template("campaigns.html", campaigns=campaigns)
-
-    @app.route("/campaigns/new", methods=["GET", "POST"])
-    def new_campaign():
-        """Create a new campaign."""
-        if request.method == "POST":
-            campaign = Campaign(
-                name=request.form["name"],
-                location=request.form["location"],
-                checkin=request.form["checkin"],
-                checkout=request.form["checkout"],
-                guests=int(request.form.get("guests", 2)),
-                min_price=float(request.form.get("min_price", 0)),
-                max_price=float(request.form.get("max_price", 500)),
-                max_listings=int(request.form.get("max_listings", 20)),
+        # Run the scraper
+        try:
+            headless = os.getenv("HEADLESS", "true").lower() == "true"
+            listings = scrape_listings_sync(
+                location=location,
+                checkin=checkin if checkin else None,
+                checkout=checkout if checkout else None,
+                guests=guests,
+                min_price=float(min_price) if min_price else None,
+                max_price=float(max_price) if max_price else None,
+                headless=headless,
             )
-            campaign_id = create_campaign(campaign)
-            flash(f"Campaign '{campaign.name}' created!", "success")
-            return redirect(url_for("campaign_detail", campaign_id=campaign_id))
 
-        return render_template("new_campaign.html")
+            saved = save_listings(listings, search_id)
+            update_search_status(search_id, SearchStatus.COMPLETED, len(listings))
+            flash(f"Found {len(listings)} listings for {location}!", "success")
+        except Exception as e:
+            logger.error("Search failed for %s: %s", location, e)
+            update_search_status(search_id, SearchStatus.FAILED, 0)
+            flash(f"Search failed: {e}", "error")
 
-    @app.route("/campaigns/<int:campaign_id>")
-    def campaign_detail(campaign_id):
-        """View campaign details with listings and outreach."""
-        campaign = get_campaign(campaign_id)
-        if not campaign:
-            flash("Campaign not found", "error")
-            return redirect(url_for("campaigns_list"))
+        return redirect(url_for("search_results", search_id=search_id))
 
-        listings = get_listings(campaign_id)
-        outreach = get_outreach_for_campaign(campaign_id)
+    @app.route("/search/<int:search_id>")
+    def search_results(search_id):
+        """View search results."""
+        search_record = get_search(search_id)
+        if not search_record:
+            flash("Search not found.", "error")
+            return redirect(url_for("home"))
 
+        listings = get_listings(search_id)
         return render_template(
-            "campaign_detail.html",
-            campaign=campaign,
+            "results.html",
+            search=search_record,
             listings=listings,
-            outreach=outreach,
         )
 
-    @app.route("/campaigns/<int:campaign_id>/run", methods=["POST"])
-    def run_campaign_route(campaign_id):
-        """Trigger a campaign run manually."""
-        campaign = get_campaign(campaign_id)
-        if not campaign:
-            flash("Campaign not found", "error")
-            return redirect(url_for("campaigns_list"))
-
-        config = load_config()
-        creator = get_creator_profile(config)
-        result = run_campaign(campaign, creator)
-
-        flash(
-            f"Campaign completed! Found {result['listings_found']} listings, "
-            f"created {result['outreach_created']} outreach messages.",
-            "success",
-        )
-        return redirect(url_for("campaign_detail", campaign_id=campaign_id))
-
-    @app.route("/campaigns/<int:campaign_id>/status", methods=["POST"])
-    def update_status(campaign_id):
-        """Update campaign status."""
-        new_status = CampaignStatus(request.form["status"])
-        update_campaign_status(campaign_id, new_status)
-        flash(f"Campaign status updated to {new_status.value}", "success")
-        return redirect(url_for("campaign_detail", campaign_id=campaign_id))
-
-    @app.route("/outreach/<int:outreach_id>/status", methods=["POST"])
-    def update_outreach(outreach_id):
-        """Update outreach status."""
-        new_status = OutreachStatus(request.form["status"])
-        update_outreach_status(outreach_id, new_status)
-        campaign_id = request.form.get("campaign_id", 1)
-        return redirect(url_for("campaign_detail", campaign_id=campaign_id))
-
-    @app.route("/api/stats")
-    def api_stats():
-        """API endpoint for outreach statistics."""
-        return jsonify(get_outreach_stats())
-
-    @app.route("/api/campaigns")
-    def api_campaigns():
-        """API endpoint listing all campaigns."""
-        campaigns = get_campaigns()
-        return jsonify([c.model_dump() for c in campaigns])
+    @app.route("/api/searches")
+    def api_searches():
+        """API endpoint listing all searches."""
+        searches = get_searches()
+        return jsonify([s.model_dump() for s in searches])
 
     return app
