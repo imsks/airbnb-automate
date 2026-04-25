@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Airbnb Automate{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="/">🏠 Airbnb Automate</a>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="{% if request.path == '/' %}active{% endif %}">Dashboard</a>
+            <a href="/campaigns" class="{% if '/campaigns' in request.path %}active{% endif %}">Campaigns</a>
+            <a href="/campaigns/new" class="btn btn-primary btn-sm">+ New Campaign</a>
+        </div>
+    </nav>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="alerts">
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>Airbnb Automate — Content Creator Outreach Tool</p>
+    </footer>
+</body>
+</html>

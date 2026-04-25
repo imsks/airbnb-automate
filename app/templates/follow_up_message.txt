@@ -1,0 +1,12 @@
+Hi {{ host_name }},
+
+I hope you're doing well! I reached out a few days ago about a potential collaboration for your listing "{{ listing_title }}" — I wanted to follow up in case my message got lost in the shuffle.
+
+I'm {{ creator_name }}, a content creator on {{ platform }} ({{ handle }}), and I'd love to create professional content for your space in exchange for a stay.
+
+I understand you're busy, so no pressure at all! If you're interested or have any questions, I'd be happy to share more details.
+
+Thanks for your time!
+
+Best,
+{{ creator_name }}

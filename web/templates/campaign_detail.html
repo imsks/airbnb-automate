@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}{{ campaign.name }} — Airbnb Automate{% endblock %}
+
+{% block content %}
+<div class="campaign-detail">
+    <div class="page-header">
+        <div>
+            <h1>{{ campaign.name }}</h1>
+            <p class="subtitle">📍 {{ campaign.location }} · 📅 {{ campaign.checkin }} → {{ campaign.checkout }}</p>
+        </div>
+        <div class="header-actions">
+            <form method="POST" action="/campaigns/{{ campaign.id }}/run" style="display:inline">
+                <button type="submit" class="btn btn-primary">▶ Run Now</button>
+            </form>
+            <form method="POST" action="/campaigns/{{ campaign.id }}/status" style="display:inline">
+                {% if campaign.status.value == 'active' %}
+                <input type="hidden" name="status" value="paused">
+                <button type="submit" class="btn btn-secondary">⏸ Pause</button>
+                {% elif campaign.status.value == 'paused' %}
+                <input type="hidden" name="status" value="active">
+                <button type="submit" class="btn btn-secondary">▶ Resume</button>
+                {% endif %}
+            </form>
+        </div>
+    </div>
+
+    <div class="campaign-info">
+        <span class="badge status-{{ campaign.status.value }}">{{ campaign.status.value | upper }}</span>
+        <span>👥 {{ campaign.guests }} guests</span>
+        <span>💰 ${{ campaign.min_price }}–${{ campaign.max_price }}/night</span>
+        <span>📋 Max {{ campaign.max_listings }} listings</span>
+    </div>
+
+    <!-- Listings Section -->
+    <section class="section">
+        <h2>🏠 Listings Found ({{ listings | length }})</h2>
+        {% if listings %}
+        <div class="listings-grid">
+            {% for listing in listings %}
+            <div class="listing-card">
+                {% if listing.photo_url %}
+                <img src="{{ listing.photo_url }}" alt="{{ listing.title }}" class="listing-photo">
+                {% endif %}
+                <div class="listing-info">
+                    <h3>{{ listing.title }}</h3>
+                    <p class="listing-host">
+                        Hosted by {{ listing.host_name or 'Unknown' }}
+                        {% if listing.superhost %}<span class="badge superhost">★ Superhost</span>{% endif %}
+                    </p>
+                    <p class="listing-meta">
+                        ⭐ {{ listing.rating }} ({{ listing.review_count }} reviews) ·
+                        💰 ${{ listing.price_per_night }}/night
+                    </p>
+                    {% if listing.url %}
+                    <a href="{{ listing.url }}" target="_blank" class="btn btn-sm btn-secondary">View on Airbnb →</a>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No listings found yet. Run the campaign to search for listings.</p>
+        </div>
+        {% endif %}
+    </section>
+
+    <!-- Outreach Section -->
+    <section class="section">
+        <h2>📨 Outreach ({{ outreach | length }})</h2>
+        {% if outreach %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Host</th>
+                    <th>Listing</th>
+                    <th>Status</th>
+                    <th>Sent</th>
+                    <th>Follow-ups</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for o in outreach %}
+                <tr>
+                    <td>{{ o.host_name or 'Unknown Host' }}</td>
+                    <td>
+                        <a href="{{ o.listing_url }}" target="_blank">{{ o.listing_title }}</a>
+                    </td>
+                    <td>
+                        <span class="badge outreach-{{ o.status.value }}">{{ o.status.value }}</span>
+                    </td>
+                    <td>{{ o.sent_at or '—' }}</td>
+                    <td>{{ o.follow_up_count }}</td>
+                    <td>
+                        <details class="message-preview">
+                            <summary class="btn btn-sm">View Message</summary>
+                            <pre class="message-text">{{ o.message }}</pre>
+                        </details>
+                        <form method="POST" action="/outreach/{{ o.id }}/status" style="display:inline">
+                            <input type="hidden" name="campaign_id" value="{{ campaign.id }}">
+                            <select name="status" onchange="this.form.submit()">
+                                <option value="">Update...</option>
+                                <option value="sent">✉ Mark Sent</option>
+                                <option value="responded">💬 Responded</option>
+                                <option value="accepted">✅ Accepted</option>
+                                <option value="declined">❌ Declined</option>
+                                <option value="no_response">😶 No Response</option>
+                            </select>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state">
+            <p>No outreach messages yet. Run the campaign first to generate messages.</p>
+        </div>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}
