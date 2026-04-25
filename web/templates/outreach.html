@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}Outreach — {{ search.location }}{% endblock %}
+
+{% block content %}
+<div class="outreach-page">
+    <div class="results-header">
+        <a href="/search/{{ search.id }}" class="btn btn-secondary">← Back to Results</a>
+        <div>
+            <h1>📨 Outreach — {{ search.location }}</h1>
+            <p class="results-meta">Sending messages to Airbnb hosts</p>
+        </div>
+        {% if outreach_running %}
+        <span class="badge status-searching">⏳ Running</span>
+        {% else %}
+        <span class="badge status-completed">✅ Done</span>
+        {% endif %}
+    </div>
+
+    <!-- Summary -->
+    <div class="outreach-summary" id="outreach-summary">
+        {% set sent = messages|selectattr('status.value', 'equalto', 'sent')|list|length %}
+        {% set failed = messages|selectattr('status.value', 'equalto', 'failed')|list|length %}
+        {% set pending = messages|selectattr('status.value', 'in', ['pending', 'sending'])|list|length %}
+        {% set skipped = messages|selectattr('status.value', 'equalto', 'skipped')|list|length %}
+
+        <div class="summary-cards">
+            <div class="summary-card">
+                <span class="summary-number">{{ messages|length }}</span>
+                <span class="summary-label">Total</span>
+            </div>
+            <div class="summary-card summary-sent">
+                <span class="summary-number">{{ sent }}</span>
+                <span class="summary-label">Sent</span>
+            </div>
+            <div class="summary-card summary-pending">
+                <span class="summary-number">{{ pending }}</span>
+                <span class="summary-label">Pending</span>
+            </div>
+            <div class="summary-card summary-failed">
+                <span class="summary-number">{{ failed }}</span>
+                <span class="summary-label">Failed</span>
+            </div>
+            {% if skipped > 0 %}
+            <div class="summary-card summary-skipped">
+                <span class="summary-number">{{ skipped }}</span>
+                <span class="summary-label">Skipped</span>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Message list -->
+    {% if messages %}
+    <div class="outreach-list">
+        {% for msg in messages %}
+        <div class="outreach-item outreach-{{ msg.status.value }}" data-id="{{ msg.id }}">
+            <div class="outreach-item-header">
+                <div>
+                    <strong>{{ msg.host_name }}</strong>
+                    <span class="outreach-place">— {{ msg.place_name }}</span>
+                </div>
+                <span class="badge status-{{ msg.status.value }}">{{ msg.status.value }}</span>
+            </div>
+            {% if msg.error %}
+            <p class="outreach-error">❌ {{ msg.error }}</p>
+            {% endif %}
+            {% if msg.sent_at %}
+            <p class="outreach-time">Sent at {{ msg.sent_at }}</p>
+            {% endif %}
+            <details class="message-detail">
+                <summary>View message</summary>
+                <pre class="message-text">{{ msg.message }}</pre>
+            </details>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No outreach messages yet. Go back and start outreach.</p>
+    </div>
+    {% endif %}
+
+    {% if not outreach_running and messages %}
+    <div class="outreach-actions">
+        <a href="/search/{{ search.id }}" class="btn btn-primary">← Back to Results</a>
+    </div>
+    {% endif %}
+</div>
+
+{% if outreach_running %}
+<script>
+    // Poll for status updates every 3 seconds while outreach is running
+    (function() {
+        const interval = setInterval(function() {
+            fetch('/api/search/{{ search.id }}/outreach')
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.running) {
+                        clearInterval(interval);
+                        location.reload();
+                        return;
+                    }
+                    // Update summary numbers
+                    const s = data.summary;
+                    document.querySelectorAll('.summary-sent .summary-number').forEach(el => el.textContent = s.sent);
+                    document.querySelectorAll('.summary-pending .summary-number').forEach(el => el.textContent = s.pending);
+                    document.querySelectorAll('.summary-failed .summary-number').forEach(el => el.textContent = s.failed);
+
+                    // Update individual message statuses
+                    data.messages.forEach(function(msg) {
+                        const el = document.querySelector('[data-id="' + msg.id + '"]');
+                        if (el) {
+                            const badge = el.querySelector('.badge');
+                            if (badge) {
+                                badge.textContent = msg.status;
+                                badge.className = 'badge status-' + msg.status;
+                            }
+                            el.className = 'outreach-item outreach-' + msg.status;
+                        }
+                    });
+                })
+                .catch(() => {});
+        }, 3000);
+    })();
+</script>
+{% endif %}
+{% endblock %}

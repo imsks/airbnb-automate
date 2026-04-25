@@ -26,6 +26,54 @@
     </div>
     {% elif listings %}
     <p class="results-count">Found <strong>{{ listings|length }}</strong> listings</p>
+
+    <!-- Outreach Section -->
+    <div class="outreach-section">
+        <div class="outreach-header">
+            <h2>📨 Host Outreach</h2>
+            {% if outreach_messages %}
+            <a href="/search/{{ search.id }}/outreach/status" class="btn btn-secondary btn-sm">View Progress →</a>
+            {% endif %}
+        </div>
+
+        {% if outreach_running %}
+        <div class="alert alert-success">
+            🚀 Outreach is running! <a href="/search/{{ search.id }}/outreach/status">View live progress →</a>
+        </div>
+        {% else %}
+        <form method="POST" action="/search/{{ search.id }}/outreach" class="outreach-form">
+            <details class="message-preview-toggle">
+                <summary>✏️ Preview / Edit Message Template</summary>
+                <div class="message-preview">
+                    <textarea name="message_template" rows="12" placeholder="Message template...">{{ message_template }}</textarea>
+                    <p class="message-hint">
+                        Use <code>{host_name}</code>, <code>{place_name}</code>, and <code>{location}</code> as placeholders.
+                    </p>
+                </div>
+            </details>
+
+            <div class="outreach-stats">
+                {% set sent_count = outreach_messages|selectattr('status.value', 'equalto', 'sent')|list|length %}
+                {% set pending_count = listings|length - sent_count %}
+                <span>📊 {{ listings|length }} hosts total</span>
+                {% if sent_count > 0 %}
+                <span class="badge status-completed">{{ sent_count }} sent</span>
+                {% endif %}
+                {% if pending_count > 0 %}
+                <span class="badge status-searching">{{ pending_count }} pending</span>
+                {% endif %}
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-lg">
+                🚀 Start Outreach ({{ listings|length }} hosts)
+            </button>
+            <p class="outreach-note">
+                A browser will open. Log in to Airbnb if prompted — then messages are sent automatically.
+            </p>
+        </form>
+        {% endif %}
+    </div>
+
     <div class="listings-grid">
         {% for listing in listings %}
         <div class="listing-card">
@@ -44,9 +92,15 @@
                     {% if listing.rating %}⭐ {{ listing.rating }}{% if listing.review_count %} ({{ listing.review_count }} reviews){% endif %} · {% endif %}
                     💰 ${{ listing.price_per_night|int }}/night
                 </p>
-                {% if listing.url %}
-                <a href="{{ listing.url }}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">View on Airbnb →</a>
-                {% endif %}
+                <div class="listing-actions">
+                    {% if listing.url %}
+                    <a href="{{ listing.url }}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">View on Airbnb →</a>
+                    {% endif %}
+                    {% if listing.id in outreach_map %}
+                        {% set msg = outreach_map[listing.id] %}
+                        <span class="badge status-{{ msg.status.value }}">📨 {{ msg.status.value }}</span>
+                    {% endif %}
+                </div>
             </div>
         </div>
         {% endfor %}

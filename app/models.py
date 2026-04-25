@@ -17,6 +17,16 @@ class SearchStatus(str, Enum):
     FAILED = "failed"
 
 
+class OutreachStatus(str, Enum):
+    """Status of an outreach message."""
+
+    PENDING = "pending"
+    SENDING = "sending"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class Listing(BaseModel):
     """An Airbnb listing."""
 
@@ -52,3 +62,19 @@ class Search(BaseModel):
     status: SearchStatus = SearchStatus.SEARCHING
     listings_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class OutreachMessage(BaseModel):
+    """A message sent to an Airbnb host."""
+
+    id: Optional[int] = None
+    search_id: int = 0
+    listing_id: str = ""
+    host_name: str = ""
+    place_name: str = ""
+    location: str = ""
+    message: str = ""
+    status: OutreachStatus = OutreachStatus.PENDING
+    error: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    sent_at: Optional[datetime] = None

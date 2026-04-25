@@ -5,7 +5,7 @@ import sqlite3
 from typing import Optional
 
 from app.config import get_db_path
-from app.models import Listing, Search, SearchStatus
+from app.models import Listing, OutreachMessage, OutreachStatus, Search, SearchStatus
 
 
 def _listings_table_columns(conn: sqlite3.Connection) -> set[str]:
@@ -85,11 +85,35 @@ def init_db(db_path: Optional[str] = None) -> None:
                 scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (search_id) REFERENCES searches(id)
             );
+
+            CREATE TABLE IF NOT EXISTS outreach_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id INTEGER NOT NULL,
+                listing_id TEXT NOT NULL,
+                host_name TEXT DEFAULT '',
+                place_name TEXT DEFAULT '',
+                location TEXT DEFAULT '',
+                message TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                error TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                sent_at TEXT,
+                FOREIGN KEY (search_id) REFERENCES searches(id),
+                FOREIGN KEY (listing_id) REFERENCES listings(id)
+            );
         """)
         _migrate_listings_search_id(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_listings_search "
             "ON listings(search_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outreach_search "
+            "ON outreach_messages(search_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outreach_listing "
+            "ON outreach_messages(listing_id)"
         )
         conn.commit()
     finally:
@@ -269,5 +293,123 @@ def get_listings(search_id: int, db_path: Optional[str] = None) -> list[Listing]
             )
             for row in rows
         ]
+    finally:
+        conn.close()
+
+
+# --- Outreach Operations ---
+
+
+def create_outreach_messages(
+    search_id: int,
+    listings: list[Listing],
+    message_template: str,
+    db_path: Optional[str] = None,
+) -> list[OutreachMessage]:
+    """Create outreach message records for each listing. Returns created messages."""
+    conn = get_connection(db_path)
+    messages = []
+    try:
+        for listing in listings:
+            host = listing.host_name or "Host"
+            place = listing.title or "your place"
+            location = listing.location or "your area"
+
+            personalized = message_template.format(
+                host_name=host,
+                place_name=place,
+                location=location,
+            )
+
+            # Skip if we already have a message for this listing+search
+            existing = conn.execute(
+                "SELECT id FROM outreach_messages WHERE search_id = ? AND listing_id = ?",
+                (search_id, listing.id),
+            ).fetchone()
+            if existing:
+                continue
+
+            cursor = conn.execute(
+                """INSERT INTO outreach_messages
+                   (search_id, listing_id, host_name, place_name, location, message, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    search_id,
+                    listing.id,
+                    host,
+                    place,
+                    location,
+                    personalized,
+                    OutreachStatus.PENDING.value,
+                ),
+            )
+            messages.append(
+                OutreachMessage(
+                    id=cursor.lastrowid,
+                    search_id=search_id,
+                    listing_id=listing.id,
+                    host_name=host,
+                    place_name=place,
+                    location=location,
+                    message=personalized,
+                    status=OutreachStatus.PENDING,
+                )
+            )
+        conn.commit()
+        return messages
+    finally:
+        conn.close()
+
+
+def get_outreach_messages(
+    search_id: int, db_path: Optional[str] = None
+) -> list[OutreachMessage]:
+    """Get all outreach messages for a search."""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM outreach_messages WHERE search_id = ? ORDER BY id",
+            (search_id,),
+        ).fetchall()
+
+        return [
+            OutreachMessage(
+                id=row["id"],
+                search_id=row["search_id"],
+                listing_id=row["listing_id"],
+                host_name=row["host_name"],
+                place_name=row["place_name"],
+                location=row["location"],
+                message=row["message"],
+                status=OutreachStatus(row["status"]),
+                error=row["error"] or "",
+                sent_at=row["sent_at"],
+            )
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def update_outreach_status(
+    message_id: int,
+    status: OutreachStatus,
+    error: str = "",
+    db_path: Optional[str] = None,
+) -> None:
+    """Update the status of an outreach message."""
+    conn = get_connection(db_path)
+    try:
+        if status == OutreachStatus.SENT:
+            conn.execute(
+                "UPDATE outreach_messages SET status = ?, error = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status.value, error, message_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE outreach_messages SET status = ?, error = ? WHERE id = ?",
+                (status.value, error, message_id),
+            )
+        conn.commit()
     finally:
         conn.close()

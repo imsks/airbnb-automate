@@ -1,6 +1,6 @@
 # 🏠 Airbnb Automate
 
-A simple app to search Airbnb listings by location, store results in a database, and view them in a clean UI.
+A simple app to search Airbnb listings by location, store results in a database, and **automatically outreach to hosts** with personalized messages — all from a clean web UI.
 
 ## 🚀 Quick Start
 
@@ -17,7 +17,7 @@ playwright install chromium
 
 ```bash
 cp .env.example .env
-# Edit .env if you want to change port, database path, etc.
+# Edit .env if you want to change port, database path, or message template
 ```
 
 ### 3. Run
@@ -35,7 +35,20 @@ That's it! The landing page lets you enter a location and optional preferences (
 2. **Add optional preferences** — check-in/out dates, guests, price range
 3. **Hit Search** — the app scrapes Airbnb listings matching your criteria
 4. **View results** — listings are saved to the database and displayed in the UI
-5. **Browse past searches** — all your previous searches are listed on the home page
+5. **Start Outreach** — click the outreach button to send personalized messages to all hosts
+6. **Track progress** — watch messages get sent in real-time on the outreach status page
+
+### 📨 Outreach Flow
+
+The outreach system automates sending personalized messages to Airbnb hosts:
+
+1. After a search, click **"🚀 Start Outreach"** on the results page
+2. A browser window opens (non-headless) — **log in to Airbnb** if prompted
+3. The app visits each listing and sends your personalized message to the host
+4. Session is saved so you don't need to log in every time
+5. Track sent/pending/failed status in real-time
+
+The default message introduces you as a content creator offering to create content in exchange for stays. You can customize the message template from the UI before starting outreach.
 
 ## 🏗 Project Structure
 
@@ -46,18 +59,20 @@ airbnb-automate/
 ├── .env.example            # Environment variables template
 │
 ├── app/                    # Core application
-│   ├── config.py           # Configuration (DB path, env)
-│   ├── models.py           # Data models (Search, Listing)
+│   ├── config.py           # Configuration (DB path, message template)
+│   ├── models.py           # Data models (Search, Listing, OutreachMessage)
 │   ├── database.py         # SQLite database layer
-│   └── scraper.py          # Airbnb scraper (Playwright)
+│   ├── scraper.py          # Airbnb scraper (Playwright)
+│   └── outreach.py         # Host outreach automation (Playwright)
 │
 ├── web/                    # Flask web app
-│   ├── app.py              # Routes (home, search, results)
+│   ├── app.py              # Routes (home, search, results, outreach)
 │   ├── static/style.css    # Styles
 │   └── templates/          # HTML templates
 │       ├── base.html
 │       ├── home.html
-│       └── results.html
+│       ├── results.html
+│       └── outreach.html
 │
 └── tests/                  # Test suite
     ├── test_database.py
@@ -72,7 +87,8 @@ airbnb-automate/
 | `FLASK_DEBUG` | Debug mode | false |
 | `FLASK_SECRET_KEY` | Session secret | dev-secret-key |
 | `DATABASE_PATH` | SQLite DB path | data/airbnb_automate.db |
-| `HEADLESS` | Run browser headless | true |
+| `HEADLESS` | Run browser headless (scraping only) | true |
+| `OUTREACH_MESSAGE` | Custom outreach message template | Built-in template |
 
 ## 🧪 Testing
 
@@ -83,5 +99,6 @@ python -m pytest tests/ -v
 
 ## ⚠️ Notes
 
-- **Airbnb ToS**: Automated scraping may violate Airbnb's Terms of Service. Use responsibly.
+- **Airbnb ToS**: Automated scraping and messaging may violate Airbnb's Terms of Service. Use responsibly.
 - **Browser Required**: The scraper uses Playwright with Chromium. Run `playwright install chromium` after installing dependencies.
+- **Login Required for Outreach**: The outreach feature requires you to be logged in to Airbnb. The browser opens non-headless so you can log in manually. Your session is saved for future use.

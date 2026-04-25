@@ -376,6 +376,241 @@ body {
     font-size: 0.85rem;
 }
 
+/* Outreach Section */
+.outreach-section {
+    background: var(--white);
+    border-radius: var(--radius);
+    padding: 1.5rem 2rem;
+    margin-bottom: 2rem;
+    box-shadow: var(--shadow);
+    border-left: 4px solid var(--secondary);
+}
+
+.outreach-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.outreach-header h2 {
+    margin: 0;
+    font-size: 1.3rem;
+}
+
+.outreach-form textarea {
+    width: 100%;
+    padding: 0.8rem;
+    border: 1px solid var(--lighter);
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.outreach-form textarea:focus {
+    outline: none;
+    border-color: var(--secondary);
+    box-shadow: 0 0 0 2px rgba(0, 166, 153, 0.2);
+}
+
+.message-preview-toggle {
+    margin-bottom: 1rem;
+}
+
+.message-preview-toggle summary {
+    cursor: pointer;
+    color: var(--light);
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 0.5rem 0;
+    list-style: none;
+}
+
+.message-preview-toggle summary::before {
+    content: "▶ ";
+    font-size: 0.7rem;
+}
+
+.message-preview-toggle[open] summary::before {
+    content: "▼ ";
+}
+
+.message-preview {
+    padding-top: 0.5rem;
+}
+
+.message-hint {
+    font-size: 0.8rem;
+    color: var(--light);
+    margin-top: 0.5rem;
+}
+
+.message-hint code {
+    background: var(--lighter);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.8rem;
+}
+
+.outreach-stats {
+    display: flex;
+    gap: 0.8rem;
+    align-items: center;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+
+.outreach-note {
+    font-size: 0.8rem;
+    color: var(--light);
+    margin-top: 0.5rem;
+    text-align: center;
+}
+
+.listing-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    flex-wrap: wrap;
+}
+
+/* Outreach Status Page */
+.outreach-summary {
+    margin-bottom: 2rem;
+}
+
+.summary-cards {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.summary-card {
+    background: var(--white);
+    border-radius: var(--radius);
+    padding: 1rem 1.5rem;
+    box-shadow: var(--shadow);
+    text-align: center;
+    flex: 1;
+    min-width: 100px;
+}
+
+.summary-number {
+    display: block;
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.summary-label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--light);
+    text-transform: uppercase;
+    margin-top: 0.2rem;
+}
+
+.summary-sent .summary-number { color: #2E7D32; }
+.summary-pending .summary-number { color: #E65100; }
+.summary-failed .summary-number { color: #C62828; }
+.summary-skipped .summary-number { color: var(--light); }
+
+.outreach-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.outreach-item {
+    background: var(--white);
+    padding: 1rem 1.5rem;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    border-left: 4px solid var(--lighter);
+}
+
+.outreach-sent { border-left-color: #2E7D32; }
+.outreach-sending { border-left-color: #E65100; }
+.outreach-pending { border-left-color: var(--lighter); }
+.outreach-failed { border-left-color: #C62828; }
+.outreach-skipped { border-left-color: var(--light); }
+
+.outreach-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.outreach-place {
+    color: var(--light);
+    font-size: 0.9rem;
+}
+
+.outreach-error {
+    font-size: 0.85rem;
+    color: #C62828;
+    margin-top: 0.3rem;
+}
+
+.outreach-time {
+    font-size: 0.8rem;
+    color: var(--light);
+    margin-top: 0.2rem;
+}
+
+.message-detail {
+    margin-top: 0.5rem;
+}
+
+.message-detail summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--light);
+}
+
+.message-text {
+    margin-top: 0.5rem;
+    padding: 0.8rem;
+    background: var(--bg);
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    font-family: inherit;
+    line-height: 1.5;
+}
+
+.outreach-actions {
+    margin-top: 2rem;
+    text-align: center;
+}
+
+.status-sending {
+    background: #FFF3E0;
+    color: #E65100;
+}
+
+.status-sent {
+    background: #E8F5E9;
+    color: #2E7D32;
+}
+
+.status-pending {
+    background: #F5F5F5;
+    color: var(--light);
+}
+
+.status-skipped {
+    background: #F5F5F5;
+    color: var(--light);
+}
+
+.alert-warning {
+    background: #FFF3E0;
+    color: #E65100;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .form-row {
@@ -390,5 +625,15 @@ body {
 
     .listings-grid {
         grid-template-columns: 1fr;
+    }
+
+    .summary-cards {
+        flex-direction: column;
+    }
+
+    .outreach-item-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.3rem;
     }
 }
