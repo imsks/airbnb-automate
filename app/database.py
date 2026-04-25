@@ -8,6 +8,31 @@ from app.config import get_db_path
 from app.models import Listing, Search, SearchStatus
 
 
+def _listings_table_columns(conn: sqlite3.Connection) -> set[str]:
+    """Return column names for the listings table, or empty set if the table is missing."""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='listings'"
+    ).fetchone()
+    if not row:
+        return set()
+    return {r[1] for r in conn.execute("PRAGMA table_info(listings)")}
+
+
+def _migrate_listings_search_id(conn: sqlite3.Connection) -> None:
+    """Ensure listings has search_id (legacy DBs used campaign_id or predate the column)."""
+    columns = _listings_table_columns(conn)
+    if not columns or "search_id" in columns:
+        return
+    conn.execute("ALTER TABLE listings ADD COLUMN search_id INTEGER")
+    if "campaign_id" in columns:
+        conn.execute(
+            "UPDATE listings SET search_id = campaign_id "
+            "WHERE search_id IS NULL"
+        )
+    # Foreign keys: historical rows may reference IDs that are not in `searches`;
+    # SQLite does not re-validate existing rows after ALTER.
+
+
 def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """Get a database connection."""
     if db_path is None:
@@ -20,9 +45,11 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
 
 
 def init_db(db_path: Optional[str] = None) -> None:
-    """Initialize database tables."""
+    """Initialize database tables and migrate legacy schemas."""
     conn = get_connection(db_path)
     try:
+        # Tables only: IF NOT EXISTS leaves an old listings table unchanged, so we
+        # must migrate before creating indexes on new columns.
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS searches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,10 +85,12 @@ def init_db(db_path: Optional[str] = None) -> None:
                 scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (search_id) REFERENCES searches(id)
             );
-
-            CREATE INDEX IF NOT EXISTS idx_listings_search
-                ON listings(search_id);
         """)
+        _migrate_listings_search_id(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_listings_search "
+            "ON listings(search_id)"
+        )
         conn.commit()
     finally:
         conn.close()

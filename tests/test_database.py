@@ -1,6 +1,7 @@
 """Tests for the database module."""
 
 import os
+import sqlite3
 import tempfile
 
 import pytest
@@ -31,6 +32,42 @@ def test_init_db(db_path):
     """Test database initialization creates tables."""
     # Should not raise
     init_db(db_path)
+
+
+def test_init_db_migrates_legacy_listings_campaign_id_to_search_id():
+    """Old DBs had listings.campaign_id; init_db must add search_id before indexing."""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS searches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                location TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS listings (
+                id TEXT PRIMARY KEY,
+                campaign_id INTEGER,
+                url TEXT
+            );
+        """
+        )
+        conn.close()
+
+        init_db(path)
+
+        conn = sqlite3.connect(path)
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(listings)")}
+        assert "search_id" in columns
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND name='idx_listings_search'"
+        ).fetchone()
+        assert idx is not None
+        conn.close()
+    finally:
+        os.unlink(path)
 
 
 def test_create_and_get_search(db_path):
