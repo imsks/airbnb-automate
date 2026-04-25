@@ -3,6 +3,7 @@
 import logging
 import re
 import asyncio
+from typing import Optional
 from urllib.parse import quote_plus
 
 from playwright.async_api import async_playwright, Page, Browser
@@ -19,8 +20,8 @@ def build_search_url(
     checkin: str,
     checkout: str,
     guests: int = 2,
-    min_price: float | None = None,
-    max_price: float | None = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
 ) -> str:
     """Build an Airbnb search URL from parameters.
 
@@ -85,7 +86,7 @@ async def _extract_listings_from_page(page: Page, location: str) -> list[Listing
     return listings
 
 
-async def _parse_listing_card(card, location: str) -> Listing | None:
+async def _parse_listing_card(card, location: str) -> Optional[Listing]:
     """Parse a single listing card element into a Listing model."""
     listing = Listing(location=location)
 
@@ -163,8 +164,8 @@ async def scrape_listings(
     checkin: str,
     checkout: str,
     guests: int = 2,
-    min_price: float | None = None,
-    max_price: float | None = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
     max_listings: int = 20,
     headless: bool = True,
 ) -> list[Listing]:
@@ -256,8 +257,8 @@ def scrape_listings_sync(
     checkin: str,
     checkout: str,
     guests: int = 2,
-    min_price: float | None = None,
-    max_price: float | None = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
     max_listings: int = 20,
     headless: bool = True,
 ) -> list[Listing]:

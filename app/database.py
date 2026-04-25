@@ -3,12 +3,13 @@
 import json
 import sqlite3
 from datetime import datetime, timezone
+from typing import Optional
 
 from app.config import get_db_path
 from app.models import Campaign, CampaignStatus, Listing, Outreach, OutreachStatus
 
 
-def get_connection(db_path: str | None = None) -> sqlite3.Connection:
+def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """Get a database connection."""
     if db_path is None:
         db_path = get_db_path()
@@ -19,7 +20,7 @@ def get_connection(db_path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
-def init_db(db_path: str | None = None) -> None:
+def init_db(db_path: Optional[str] = None) -> None:
     """Initialize database tables."""
     conn = get_connection(db_path)
     try:
@@ -95,7 +96,7 @@ def init_db(db_path: str | None = None) -> None:
 # --- Campaign Operations ---
 
 
-def create_campaign(campaign: Campaign, db_path: str | None = None) -> int:
+def create_campaign(campaign: Campaign, db_path: Optional[str] = None) -> int:
     """Create a new campaign and return its ID."""
     conn = get_connection(db_path)
     try:
@@ -126,7 +127,7 @@ def create_campaign(campaign: Campaign, db_path: str | None = None) -> int:
 
 
 def get_campaigns(
-    status: CampaignStatus | None = None, db_path: str | None = None
+    status: Optional[CampaignStatus] = None, db_path: Optional[str] = None
 ) -> list[Campaign]:
     """Get all campaigns, optionally filtered by status."""
     conn = get_connection(db_path)
@@ -164,7 +165,7 @@ def get_campaigns(
         conn.close()
 
 
-def get_campaign(campaign_id: int, db_path: str | None = None) -> Campaign | None:
+def get_campaign(campaign_id: int, db_path: Optional[str] = None) -> Optional[Campaign]:
     """Get a single campaign by ID."""
     conn = get_connection(db_path)
     try:
@@ -192,7 +193,7 @@ def get_campaign(campaign_id: int, db_path: str | None = None) -> Campaign | Non
 
 
 def update_campaign_status(
-    campaign_id: int, status: CampaignStatus, db_path: str | None = None
+    campaign_id: int, status: CampaignStatus, db_path: Optional[str] = None
 ) -> None:
     """Update campaign status."""
     conn = get_connection(db_path)
@@ -210,7 +211,7 @@ def update_campaign_status(
 
 
 def save_listings(
-    listings: list[Listing], campaign_id: int, db_path: str | None = None
+    listings: list[Listing], campaign_id: int, db_path: Optional[str] = None
 ) -> int:
     """Save listings to database. Returns count of new listings saved."""
     conn = get_connection(db_path)
@@ -254,7 +255,7 @@ def save_listings(
         conn.close()
 
 
-def get_listings(campaign_id: int, db_path: str | None = None) -> list[Listing]:
+def get_listings(campaign_id: int, db_path: Optional[str] = None) -> list[Listing]:
     """Get all listings for a campaign."""
     conn = get_connection(db_path)
     try:
@@ -291,7 +292,7 @@ def get_listings(campaign_id: int, db_path: str | None = None) -> list[Listing]:
 # --- Outreach Operations ---
 
 
-def save_outreach(outreach: Outreach, db_path: str | None = None) -> int:
+def save_outreach(outreach: Outreach, db_path: Optional[str] = None) -> int:
     """Save an outreach record. Returns the outreach ID."""
     conn = get_connection(db_path)
     try:
@@ -317,7 +318,7 @@ def save_outreach(outreach: Outreach, db_path: str | None = None) -> int:
 
 
 def update_outreach_status(
-    outreach_id: int, status: OutreachStatus, db_path: str | None = None
+    outreach_id: int, status: OutreachStatus, db_path: Optional[str] = None
 ) -> None:
     """Update outreach status."""
     conn = get_connection(db_path)
@@ -335,7 +336,7 @@ def update_outreach_status(
         conn.close()
 
 
-def record_follow_up(outreach_id: int, db_path: str | None = None) -> None:
+def record_follow_up(outreach_id: int, db_path: Optional[str] = None) -> None:
     """Record a follow-up was sent."""
     conn = get_connection(db_path)
     try:
@@ -357,7 +358,7 @@ def record_follow_up(outreach_id: int, db_path: str | None = None) -> None:
 
 
 def get_outreach_for_campaign(
-    campaign_id: int, db_path: str | None = None
+    campaign_id: int, db_path: Optional[str] = None
 ) -> list[Outreach]:
     """Get all outreach records for a campaign."""
     conn = get_connection(db_path)
@@ -388,7 +389,7 @@ def get_outreach_for_campaign(
         conn.close()
 
 
-def get_outreach_stats(db_path: str | None = None) -> dict:
+def get_outreach_stats(db_path: Optional[str] = None) -> dict:
     """Get overall outreach statistics."""
     conn = get_connection(db_path)
     try:

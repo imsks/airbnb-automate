@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Any, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -12,7 +13,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-def load_config(config_path: str | None = None) -> dict:
+def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
     """Load configuration from YAML file."""
     if config_path is None:
         config_path = os.getenv("CONFIG_PATH", str(BASE_DIR / "config.yaml"))
@@ -33,7 +34,7 @@ def get_db_path() -> str:
     return str(full_path)
 
 
-def get_creator_profile(config: dict | None = None) -> dict:
+def get_creator_profile(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Get creator profile from config or environment variables."""
     if config and "creator" in config:
         return config["creator"]

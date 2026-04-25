@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -53,7 +54,7 @@ class Listing(BaseModel):
 class Campaign(BaseModel):
     """A search campaign targeting a specific location and date range."""
 
-    id: int | None = None
+    id: Optional[int] = None
     name: str = ""
     location: str = ""
     checkin: str = ""
@@ -71,7 +72,7 @@ class Campaign(BaseModel):
 class Outreach(BaseModel):
     """An outreach record tracking communication with a host."""
 
-    id: int | None = None
+    id: Optional[int] = None
     campaign_id: int = 0
     listing_id: str = ""
     host_name: str = ""
@@ -79,8 +80,8 @@ class Outreach(BaseModel):
     listing_url: str = ""
     message: str = ""
     status: OutreachStatus = OutreachStatus.PENDING
-    sent_at: datetime | None = None
+    sent_at: Optional[datetime] = None
     follow_up_count: int = 0
-    last_follow_up_at: datetime | None = None
+    last_follow_up_at: Optional[datetime] = None
     response: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
