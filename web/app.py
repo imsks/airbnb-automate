@@ -50,7 +50,7 @@ def create_app() -> Flask:
         # Check if already running
         if "login" in _login_thread and _login_thread["login"].is_alive():
             flash("Login browser is already open. Complete the login there.", "warning")
-            return redirect(request.referrer or url_for("home"))
+            return redirect(url_for("home"))
 
         _login_result["status"] = None
 
@@ -71,7 +71,7 @@ def create_app() -> Flask:
             "The session will be saved automatically.",
             "success",
         )
-        return redirect(request.referrer or url_for("home"))
+        return redirect(url_for("home"))
 
     @app.route("/api/login/status")
     def api_login_status():
