@@ -77,7 +77,8 @@ def cmd_serve(port: int = 5000) -> None:
 
     print(f"🚀 Starting Airbnb Automate dashboard on http://localhost:{port}")
     app = create_app()
-    app.run(host="0.0.0.0", port=port, debug=True)
+    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    app.run(host="0.0.0.0", port=port, debug=debug)
 
 
 def cmd_search() -> None:
