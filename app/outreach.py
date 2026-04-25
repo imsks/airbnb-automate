@@ -15,7 +15,13 @@ from typing import Optional
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from app.config import get_browser_state_path, get_outreach_message_template
+from app.config import (
+    get_browser_state_path,
+    get_browser_user_agent,
+    get_browser_user_data_dir,
+    get_outreach_message_template,
+    get_playwright_channel,
+)
 from app.database import (
     create_outreach_messages,
     get_listings,
@@ -34,20 +40,29 @@ LOGIN_CHECK_INTERVAL_MS = 5000
 LOGIN_MAX_CHECKS = 60  # 60 checks × 5s = 5 minutes max wait
 MESSAGE_DELAY_MS = 2000
 
+# Reduces "controlled by automated software" friction on some sites (best-effort).
+_CHROMIUM_OUTREACH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+]
+
+
+def _outreach_context_kwargs() -> dict:
+    """Shared context options for launch / persistent context."""
+    opts: dict = {
+        "viewport": {"width": 1920, "height": 1080},
+    }
+    ua = get_browser_user_agent()
+    if ua:
+        opts["user_agent"] = ua
+    return opts
+
 
 async def _load_browser_context(
     browser: Browser,
 ) -> BrowserContext:
     """Load browser context with saved state if available, otherwise create fresh."""
     state_path = get_browser_state_path()
-    context_opts = {
-        "viewport": {"width": 1920, "height": 1080},
-        "user_agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-    }
+    context_opts = _outreach_context_kwargs()
 
     if Path(state_path).exists():
         try:
@@ -94,7 +109,10 @@ async def _ensure_logged_in(page: Page) -> bool:
         return True
 
     # Not logged in — navigate to login page and wait for user
-    logger.info("Not logged in. Navigating to login page — please log in manually.")
+    logger.info(
+        "Not logged in. Navigating to login page — please log in manually. "
+        "If Google/Apple logins fail, set PLAYWRIGHT_CHANNEL=chrome in .env and retry."
+    )
     await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
     # Wait up to 5 minutes for login to complete
@@ -242,10 +260,33 @@ async def run_outreach(
     summary = {"total": len(messages), "sent": 0, "failed": 0, "skipped": 0}
 
     async with async_playwright() as p:
-        # Always non-headless for outreach (user needs to log in)
-        browser = await p.chromium.launch(headless=False)
-        context = await _load_browser_context(browser)
-        page = await context.new_page()
+        channel = get_playwright_channel()
+        user_data_dir = get_browser_user_data_dir()
+        base_ctx = _outreach_context_kwargs()
+        launch_kwargs: dict = {
+            "headless": False,
+            "args": _CHROMIUM_OUTREACH_ARGS,
+        }
+        if channel:
+            launch_kwargs["channel"] = channel
+            logger.info("Using Playwright channel: %s", channel)
+
+        browser: Optional[Browser] = None
+        context: BrowserContext
+
+        if user_data_dir:
+            Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+            # Persistent profile: session lives on disk; do not use browser_state.json
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir,
+                **{**base_ctx, **launch_kwargs},
+            )
+            page = context.pages[0] if context.pages else await context.new_page()
+            logger.info("Using persistent browser profile at %s", user_data_dir)
+        else:
+            browser = await p.chromium.launch(**launch_kwargs)
+            context = await _load_browser_context(browser)
+            page = await context.new_page()
 
         try:
             # Ensure user is logged in
@@ -259,8 +300,9 @@ async def run_outreach(
                     summary["failed"] += 1
                 return summary
 
-            # Save state after successful login
-            await _save_browser_state(context)
+            # Save state after successful login (ephemeral context only)
+            if not user_data_dir:
+                await _save_browser_state(context)
 
             # Send messages
             for msg in pending:
@@ -300,12 +342,16 @@ async def run_outreach(
                 await page.wait_for_timeout(MESSAGE_DELAY_MS)
 
             # Save state after outreach
-            await _save_browser_state(context)
+            if not user_data_dir:
+                await _save_browser_state(context)
 
         except Exception as e:
             logger.error("Outreach error: %s", e)
         finally:
-            await browser.close()
+            if browser is not None:
+                await browser.close()
+            else:
+                await context.close()
 
     return summary
 

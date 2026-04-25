@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -24,6 +25,38 @@ def get_browser_state_path() -> str:
     state_path = BASE_DIR / "data" / "browser_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
     return str(state_path)
+
+
+def get_playwright_channel() -> Optional[str]:
+    """Playwright browser channel: 'chrome', 'chromium', 'msedge', or empty (bundled).
+
+    Set PLAYWRIGHT_CHANNEL=chrome to use the installed Google Chrome instead of
+    Playwright's Chromium — this often fixes Airbnb / OAuth login issues.
+    """
+    raw = (os.getenv("PLAYWRIGHT_CHANNEL") or "").strip().lower()
+    if not raw or raw in ("chromium", "playwright", "default"):
+        return None
+    return raw
+
+
+def get_browser_user_data_dir() -> Optional[str]:
+    """Optional persistent profile directory for Playwright (Chrome user-data).
+
+    If set, outreach uses launch_persistent_context so cookies live under this
+    path (e.g. data/airbnb_browser_profile). Use a *dedicated* directory — do
+    not point at your live Chrome profile while Google Chrome is running (profile lock).
+    """
+    raw = (os.getenv("BROWSER_USER_DATA_DIR") or "").strip()
+    if not raw:
+        return None
+    path = (BASE_DIR / raw).resolve() if not os.path.isabs(raw) else Path(raw)
+    return str(path)
+
+
+def get_browser_user_agent() -> Optional[str]:
+    """Optional custom User-Agent. If unset, the browser's default is used (recommended)."""
+    raw = (os.getenv("BROWSER_USER_AGENT") or "").strip()
+    return raw or None
 
 
 # Outreach message template — placeholders: {host_name}, {place_name}, {location}

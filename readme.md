@@ -88,6 +88,9 @@ airbnb-automate/
 | `FLASK_SECRET_KEY` | Session secret | dev-secret-key |
 | `DATABASE_PATH` | SQLite DB path | data/airbnb_automate.db |
 | `HEADLESS` | Run browser headless (scraping only) | true |
+| `PLAYWRIGHT_CHANNEL` | Use installed `chrome` or `msedge` instead of bundled Chromium (helps Airbnb login) | (bundled Chromium) |
+| `BROWSER_USER_DATA_DIR` | Persistent profile path (e.g. `data/airbnb_chrome_profile`); do not use your main Chrome profile while Chrome is open | (session in `data/browser_state.json`) |
+| `BROWSER_USER_AGENT` | Force a custom User-Agent (rarely needed) | (browser default) |
 | `OUTREACH_MESSAGE` | Custom outreach message template | Built-in template |
 
 ## 🧪 Testing
@@ -101,4 +104,4 @@ python -m pytest tests/ -v
 
 - **Airbnb ToS**: Automated scraping and messaging may violate Airbnb's Terms of Service. Use responsibly.
 - **Browser Required**: The scraper uses Playwright with Chromium. Run `playwright install chromium` after installing dependencies.
-- **Login Required for Outreach**: The outreach feature requires you to be logged in to Airbnb. The browser opens non-headless so you can log in manually. Your session is saved for future use.
+- **Login Required for Outreach**: The outreach feature requires you to be logged in to Airbnb. The browser opens non-headless so you can log in manually. **If login fails in the opened window** (Google/Apple/captcha, or “unsupported browser”), set `PLAYWRIGHT_CHANNEL=chrome` in `.env` so the app uses your installed Google Chrome, then restart. Session is stored in `data/browser_state.json`, or in the folder from `BROWSER_USER_DATA_DIR` if you set it.
