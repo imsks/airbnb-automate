@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 AIRBNB_BASE_URL = "https://www.airbnb.com"
 LOGIN_URL = f"{AIRBNB_BASE_URL}/login"
 
+# Named constants for timeouts and delays
+LOGIN_CHECK_INTERVAL_MS = 5000
+LOGIN_MAX_CHECKS = 60  # 60 checks × 5s = 5 minutes max wait
+MESSAGE_DELAY_MS = 2000
+
 
 async def _load_browser_context(
     browser: Browser,
@@ -93,8 +98,8 @@ async def _ensure_logged_in(page: Page) -> bool:
     await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
     # Wait up to 5 minutes for login to complete
-    for _ in range(60):
-        await page.wait_for_timeout(5000)
+    for _ in range(LOGIN_MAX_CHECKS):
+        await page.wait_for_timeout(LOGIN_CHECK_INTERVAL_MS)
         profile_el = await page.query_selector(
             '[data-testid="cypress-headernav-profile"], '
             'button[aria-label*="profile"], '
@@ -107,7 +112,7 @@ async def _ensure_logged_in(page: Page) -> bool:
 
         # Also check if URL changed away from login
         current_url = page.url
-        if "/login" not in current_url and "airbnb.com" in current_url:
+        if AIRBNB_BASE_URL in current_url and "/login" not in current_url.split("?")[0]:
             logger.info("Login appears successful (redirected away from login)")
             return True
 
@@ -292,7 +297,7 @@ async def run_outreach(
                     )
 
                 # Small delay between messages to avoid rate limiting
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(MESSAGE_DELAY_MS)
 
             # Save state after outreach
             await _save_browser_state(context)

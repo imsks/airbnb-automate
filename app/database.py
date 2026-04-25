@@ -315,11 +315,17 @@ def create_outreach_messages(
             place = listing.title or "your place"
             location = listing.location or "your area"
 
-            personalized = message_template.format(
-                host_name=host,
-                place_name=place,
-                location=location,
-            )
+            try:
+                personalized = message_template.format(
+                    host_name=host,
+                    place_name=place,
+                    location=location,
+                )
+            except KeyError as e:
+                # Gracefully handle invalid placeholders in the template
+                personalized = message_template.replace("{host_name}", host)
+                personalized = personalized.replace("{place_name}", place)
+                personalized = personalized.replace("{location}", location)
 
             # Skip if we already have a message for this listing+search
             existing = conn.execute(

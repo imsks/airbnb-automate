@@ -92,26 +92,27 @@
 <script>
     // Poll for status updates every 3 seconds while outreach is running
     (function() {
-        const interval = setInterval(function() {
-            fetch('/api/search/{{ search.id }}/outreach')
-                .then(r => r.json())
-                .then(data => {
+        var searchId = {{ search.id|tojson }};
+        var interval = setInterval(function() {
+            fetch('/api/search/' + encodeURIComponent(searchId) + '/outreach')
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
                     if (!data.running) {
                         clearInterval(interval);
                         location.reload();
                         return;
                     }
                     // Update summary numbers
-                    const s = data.summary;
-                    document.querySelectorAll('.summary-sent .summary-number').forEach(el => el.textContent = s.sent);
-                    document.querySelectorAll('.summary-pending .summary-number').forEach(el => el.textContent = s.pending);
-                    document.querySelectorAll('.summary-failed .summary-number').forEach(el => el.textContent = s.failed);
+                    var s = data.summary;
+                    document.querySelectorAll('.summary-sent .summary-number').forEach(function(el) { el.textContent = s.sent; });
+                    document.querySelectorAll('.summary-pending .summary-number').forEach(function(el) { el.textContent = s.pending; });
+                    document.querySelectorAll('.summary-failed .summary-number').forEach(function(el) { el.textContent = s.failed; });
 
                     // Update individual message statuses
                     data.messages.forEach(function(msg) {
-                        const el = document.querySelector('[data-id="' + msg.id + '"]');
+                        var el = document.querySelector('[data-id="' + String(parseInt(msg.id, 10)) + '"]');
                         if (el) {
-                            const badge = el.querySelector('.badge');
+                            var badge = el.querySelector('.badge');
                             if (badge) {
                                 badge.textContent = msg.status;
                                 badge.className = 'badge status-' + msg.status;
@@ -120,7 +121,7 @@
                         }
                     });
                 })
-                .catch(() => {});
+                .catch(function() {});
         }, 3000);
     })();
 </script>
