@@ -9,7 +9,7 @@ import pytest
 # Ensure project root is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from cli import build_parser, run_cycle, process_location, setup_logging
+from cli import build_parser, setup_logging, validate_date
 
 
 class TestBuildParser:
@@ -155,3 +155,38 @@ class TestSetupLogging:
     def test_setup_logging_verbose(self):
         # Should not raise
         setup_logging(verbose=True)
+
+
+class TestValidateDate:
+    """Tests for date validation."""
+
+    def test_valid_date(self):
+        assert validate_date("2026-07-01") == "2026-07-01"
+
+    def test_valid_date_leap_year(self):
+        assert validate_date("2028-02-29") == "2028-02-29"
+
+    def test_invalid_format_slash(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match="YYYY-MM-DD"):
+            validate_date("07/01/2026")
+
+    def test_invalid_format_no_dash(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match="YYYY-MM-DD"):
+            validate_date("20260701")
+
+    def test_invalid_date_value(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match="valid"):
+            validate_date("2026-02-30")
+
+    def test_invalid_month(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match="valid"):
+            validate_date("2026-13-01")
+
+    def test_parser_rejects_bad_date(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--locations", "Goa", "--checkin", "not-a-date"])

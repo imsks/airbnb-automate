@@ -16,6 +16,7 @@ Customize:
 import argparse
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -50,6 +51,24 @@ def _handle_signal(signum: int, frame: object) -> None:
     global _shutdown
     _shutdown = True
     logger.info("Shutdown signal received — finishing current cycle then exiting.")
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def validate_date(value: str) -> str:
+    """Validate that a string is a valid YYYY-MM-DD date."""
+    if not _DATE_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"Invalid date '{value}'. Use YYYY-MM-DD format (e.g. 2026-07-01)"
+        )
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date '{value}'. Use a valid YYYY-MM-DD date (e.g. 2026-07-01)"
+        )
+    return value
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -254,11 +273,13 @@ Examples:
     )
     parser.add_argument(
         "--checkin",
+        type=validate_date,
         default=None,
         help="Check-in date (YYYY-MM-DD)",
     )
     parser.add_argument(
         "--checkout",
+        type=validate_date,
         default=None,
         help="Check-out date (YYYY-MM-DD)",
     )
