@@ -10,19 +10,17 @@ Flow:
 
 import asyncio
 import logging
-import os
-from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, BrowserContext, Page
 
-from app.config import (
-    get_browser_state_path,
-    get_browser_user_agent,
-    get_browser_user_data_dir,
-    get_outreach_message_template,
-    get_playwright_channel,
+from app.browser_session import (
+    close_airbnb_session,
+    flush_profile_after_login,
+    open_airbnb_browser,
+    save_storage_state,
 )
+from app.config import get_outreach_message_template
 from app.database import (
     create_outreach_messages,
     get_listings,
@@ -41,11 +39,6 @@ LOGIN_CHECK_INTERVAL_MS = 5000
 LOGIN_MAX_CHECKS = 60  # 60 checks × 5s = 5 minutes max wait
 MESSAGE_DELAY_MS = 2000
 
-# Reduces "controlled by automated software" friction on some sites (best-effort).
-_CHROMIUM_OUTREACH_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-]
-
 _PROFILE_SELECTORS = (
     '[data-testid="cypress-headernav-profile"], '
     'button[aria-label*="profile"], '
@@ -54,68 +47,25 @@ _PROFILE_SELECTORS = (
 )
 
 
-def _outreach_context_kwargs() -> dict:
-    """Shared context options for launch / persistent context."""
-    opts: dict = {
-        "viewport": {"width": 1920, "height": 1080},
-    }
-    ua = get_browser_user_agent()
-    if ua:
-        opts["user_agent"] = ua
-    return opts
-
-
-def _launch_kwargs() -> dict:
-    """Shared launch keyword arguments (headless=False, channel, args)."""
-    kwargs: dict = {
-        "headless": False,
-        "args": _CHROMIUM_OUTREACH_ARGS,
-    }
-    channel = get_playwright_channel()
-    if channel:
-        kwargs["channel"] = channel
-        logger.info("Using Playwright channel: %s", channel)
-    return kwargs
-
-
-async def _open_persistent_context(pw) -> tuple[BrowserContext, Page]:
-    """Open a persistent Chromium context backed by the user-data directory.
-
-    Falls back to an ephemeral context with storage_state if the user data
-    dir is explicitly disabled.
-    """
-    user_data_dir = get_browser_user_data_dir()
-    base_ctx = _outreach_context_kwargs()
-    launch = _launch_kwargs()
-
-    if user_data_dir:
-        Path(user_data_dir).mkdir(parents=True, exist_ok=True)
-        context = await pw.chromium.launch_persistent_context(
-            user_data_dir,
-            **{**base_ctx, **launch},
-        )
-        page = context.pages[0] if context.pages else await context.new_page()
-        logger.info("Using persistent browser profile at %s", user_data_dir)
-        return context, page
-
-    # Fallback: ephemeral context (no persistent profile)
-    browser = await pw.chromium.launch(**launch)
-    state_path = get_browser_state_path()
-    ctx_kwargs = {**base_ctx}
-    if Path(state_path).exists():
-        try:
-            ctx_kwargs["storage_state"] = state_path
-        except Exception:
-            pass
-    context = await browser.new_context(**ctx_kwargs)
-    page = await context.new_page()
-    return context, page
-
-
 async def _is_logged_in(page: Page) -> bool:
-    """Check whether the current page shows a logged-in Airbnb session."""
-    profile_el = await page.query_selector(_PROFILE_SELECTORS)
-    return profile_el is not None
+    """Detect logged-in state (DOM + session cookies; Airbnb often hides nav until slow JS)."""
+    for _ in range(3):
+        if await page.query_selector(_PROFILE_SELECTORS):
+            return True
+        await page.wait_for_timeout(1000)
+    # Cookie fallback: OAuth / new UI may not match legacy selectors
+    try:
+        cookies = await page.context.cookies("https://www.airbnb.com")
+    except Exception:
+        cookies = await page.context.cookies()
+    for c in cookies:
+        d = (c.get("domain") or "").lower()
+        n = (c.get("name") or "").lower()
+        if "airbnb" not in d and "airbnb" not in n:
+            continue
+        if "session" in n or n in ("_aat", "aaj"):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -132,35 +82,44 @@ async def login_to_airbnb() -> bool:
     Returns True if the user successfully logged in within the timeout.
     """
     async with async_playwright() as pw:
-        context, page = await _open_persistent_context(pw)
+        context, browser, uses_cdp = None, None, False
+        try:
+            context, page, browser, uses_cdp = await open_airbnb_browser(
+                pw, headless=False
+            )
+        except Exception as e:
+            logger.error("Could not start browser for login: %s", e)
+            return False
+
         try:
             # Check if already logged in
-            await page.goto(AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(3000)
-
+            await page.goto(
+                AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=30000
+            )
+            await page.wait_for_timeout(2000)
             if await _is_logged_in(page):
                 logger.info("Already logged in to Airbnb — no action needed.")
+                await flush_profile_after_login(context)
                 return True
 
             # Navigate to login page and wait for user to complete login
             logger.info(
-                "Not logged in. Opening Airbnb login page — please log in manually."
+                "Not logged in. Opening Airbnb login page — log in (email, Google, or Apple)."
             )
             await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
             for _ in range(LOGIN_MAX_CHECKS):
                 await page.wait_for_timeout(LOGIN_CHECK_INTERVAL_MS)
-
                 if await _is_logged_in(page):
                     logger.info("Login successful!")
+                    await flush_profile_after_login(context)
                     return True
-
                 current_url = page.url
-                if (
-                    AIRBNB_BASE_URL in current_url
-                    and "/login" not in current_url.split("?")[0]
-                ):
-                    logger.info("Login appears successful (redirected away from login)")
+                if (AIRBNB_BASE_URL in current_url and "/login" not in current_url.split("?")[0]) and await _is_logged_in(page):
+                    logger.info(
+                        "Login appears successful (session detected after redirect)."
+                    )
+                    await flush_profile_after_login(context)
                     return True
 
             logger.error(
@@ -168,7 +127,11 @@ async def login_to_airbnb() -> bool:
             )
             return False
         finally:
-            await context.close()
+            try:
+                await save_storage_state(context)
+            except Exception:  # pragma: no cover
+                pass
+            await close_airbnb_session(context, browser, uses_cdp=uses_cdp)
 
 
 def login_to_airbnb_sync() -> bool:
@@ -177,42 +140,24 @@ def login_to_airbnb_sync() -> bool:
 
 
 async def check_airbnb_login_status() -> bool:
-    """Quickly check if the persistent profile has a valid Airbnb session.
-
-    Opens a *headless* browser with the same profile to avoid popping up
-    a visible window.  Returns True if logged in, False otherwise.
-    """
-    user_data_dir = get_browser_user_data_dir()
-    if not user_data_dir or not Path(user_data_dir).exists():
-        return False
-
+    """Check session using the same browser mode as search/outreach (headless for speed)."""
     async with async_playwright() as pw:
-        base_ctx = _outreach_context_kwargs()
-        launch = _launch_kwargs()
-        # Override headless for the quick check
-        launch["headless"] = True
-
+        context, page, browser, uses_cdp = None, None, None, False
         try:
-            context = await pw.chromium.launch_persistent_context(
-                user_data_dir,
-                **{**base_ctx, **launch},
+            context, page, browser, uses_cdp = await open_airbnb_browser(
+                pw, headless=True
             )
-        except Exception as e:
-            logger.debug("Could not open profile for login check: %s", e)
-            return False
-
-        try:
-            page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(
-                AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=15000
+                AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=20000
             )
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
             return await _is_logged_in(page)
         except Exception as e:
             logger.debug("Login status check failed: %s", e)
             return False
         finally:
-            await context.close()
+            if context is not None:
+                await close_airbnb_session(context, browser, uses_cdp=uses_cdp)
 
 
 def check_airbnb_login_status_sync() -> bool:
@@ -354,7 +299,22 @@ async def run_outreach(
     summary = {"total": len(messages), "sent": 0, "failed": 0, "skipped": 0}
 
     async with async_playwright() as pw:
-        context, page = await _open_persistent_context(pw)
+        context, browser, uses_cdp = None, None, False
+        try:
+            context, page, browser, uses_cdp = await open_airbnb_browser(
+                pw, headless=False
+            )
+        except Exception as e:
+            logger.error("Could not start browser for outreach: %s", e)
+            for msg in pending:
+                update_outreach_status(
+                    msg.id,
+                    OutreachStatus.FAILED,
+                    f"Browser failed to start: {e}",
+                    db_path,
+                )
+                summary["failed"] += 1
+            return summary
 
         try:
             # Verify the user is logged in
@@ -417,7 +377,8 @@ async def run_outreach(
         except Exception as e:
             logger.error("Outreach error: %s", e)
         finally:
-            await context.close()
+            if context is not None:
+                await close_airbnb_session(context, browser, uses_cdp=uses_cdp)
 
     return summary
 

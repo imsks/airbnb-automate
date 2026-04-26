@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+from typing import Optional
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Track running background processes
 _outreach_threads: dict[int, threading.Thread] = {}
 _login_thread: dict[str, threading.Thread] = {}
-_login_result: dict[str, bool | None] = {"status": None}
+_login_result: dict[str, Optional[bool]] = {"status": None}
 
 
 def create_app() -> Flask:

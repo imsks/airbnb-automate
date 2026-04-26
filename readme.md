@@ -11,7 +11,11 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
+# Recommended for Airbnb login (uses your installed Google Chrome; OAuth works better)
+playwright install chrome
 ```
+
+Set `PLAYWRIGHT_CHANNEL=chrome` in `.env` when using the Chrome channel.
 
 ### 2. Configure (Optional)
 
@@ -48,7 +52,9 @@ The outreach system automates sending personalized messages to Airbnb hosts:
 3. The app visits each listing, clicks "Contact Host", types your personalized message, and sends it.
 4. Track sent/pending/failed status in real-time.
 
-> **Why a separate login step?** Airbnb blocks automated logins. By logging in once in a dedicated browser, your session persists on disk. Outreach then reuses it without hitting login issues.
+> **Why a separate login step?** Airbnb blocks automated logins. By logging in once in a dedicated browser, your session persists on disk. The **search** and **outreach** steps share the same Playwright session (see `app/browser_session.py`); a backup copy of cookies is also written to `data/browser_state.json` after a successful login.
+
+**If login never “sticks” or search opens a blank logged-out browser:** (1) Use **`PLAYWRIGHT_CHANNEL=chrome`** and `playwright install chrome`. (2) **Or** use **CDP**: start Chrome with `--remote-debugging-port` and a dedicated `--user-data-dir`, log in to Airbnb in that window, leave Chrome open, and set `CHROME_CDP_URL` in `.env` so the app attaches to *your* browser instead of launching a new one. Full steps are in `.env.example`.
 
 The default message introduces you as a content creator offering to create content in exchange for stays. You can customize the message template from the UI before starting outreach.
 
@@ -64,6 +70,7 @@ airbnb-automate/
 │   ├── config.py           # Configuration (DB path, message template)
 │   ├── models.py           # Data models (Search, Listing, OutreachMessage)
 │   ├── database.py         # SQLite database layer
+│   ├── browser_session.py  # Shared Playwright session (search + login + outreach)
 │   ├── scraper.py          # Airbnb scraper (Playwright)
 │   └── outreach.py         # Host outreach automation (Playwright)
 │

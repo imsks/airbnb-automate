@@ -67,6 +67,16 @@ def get_browser_user_agent() -> Optional[str]:
     return raw or None
 
 
+def get_chrome_cdp_url() -> Optional[str]:
+    """If set, Playwright connects to that Chrome via CDP instead of launching a browser.
+
+    See readme and .env.example for starting Chrome with ``--remote-debugging-port``
+    and setting ``CHROME_CDP_URL=http://127.0.0.1:PORT``.
+    """
+    raw = (os.getenv("CHROME_CDP_URL") or "").strip()
+    return raw or None
+
+
 # Outreach message template — placeholders: {host_name}, {place_name}, {location}
 DEFAULT_OUTREACH_MESSAGE = """Hey {host_name}! 👋
 
