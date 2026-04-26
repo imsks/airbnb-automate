@@ -4,6 +4,7 @@
 Usage:
     python run.py              Start the web app
     python run.py --port 8080  Start on a custom port
+    python cli.py              Run the CLI with scheduler (see cli.py --help)
 """
 
 import logging

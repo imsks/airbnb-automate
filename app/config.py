@@ -78,20 +78,19 @@ def get_chrome_cdp_url() -> Optional[str]:
 
 
 # Outreach message template — placeholders: {host_name}, {place_name}, {location}
-DEFAULT_OUTREACH_MESSAGE = """Hey {host_name}! 👋
+DEFAULT_OUTREACH_MESSAGE = """Hi {host_name}! 👋
 
-I came across your beautiful place "{place_name}" in {location} and I'd love to stay there!
+I just came across "{place_name}" while planning a trip to {location} and honestly, it looks amazing — exactly the kind of place I've been looking for.
 
-I'm Sachin Shukla — a Software Engineer working remotely and Founder at The Boring Education. I'm also a content creator with a combined following of 150k+ across my pages:
+A little about me — I'm Sachin, a remote software engineer and the founder of The Boring Education. I also create content online, and my pages (@theboringfounder and @theboringeducation) have grown to about 150k+ followers combined.
 
-📱 @theboringfounder (120k+ followers)
-📱 @theboringplanks & @theboringeducation (30k+)
+I'm reaching out because I'd genuinely love to stay at your place. I travel a lot for work and always look for unique homes over hotels. In return for the stay, I'd be happy to create some organic content — photos, reels, an honest review — that showcases your property to my audience and helps drive future bookings.
 
-Here's my pitch — I'd love to stay at your place and in return, I'll create high-quality content featuring your property that drives real traffic and bookings your way.
+No pressure at all! If this sounds interesting, I'd love to hop on a quick chat and figure out dates that work for both of us.
 
-Would you be open to a content collaboration? I'd love to chat more about how we can make this a win-win!
+Either way, beautiful place — you've done a great job with it!
 
-Best,
+Cheers,
 Sachin"""
 
 
