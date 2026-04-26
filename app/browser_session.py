@@ -168,3 +168,9 @@ async def flush_profile_after_login(context: BrowserContext) -> None:
     """Write ``browser_state.json`` and pause so the profile can flush to disk."""
     await save_storage_state(context)
     await asyncio.sleep(1.5)
+    udd = get_browser_user_data_dir()
+    logger.info(
+        "Airbnb session stored for the next run (no need to sign up again): JSON %s | user-data %s",
+        get_browser_state_path(),
+        udd,
+    )

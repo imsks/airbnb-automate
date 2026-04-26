@@ -82,18 +82,17 @@ DEFAULT_OUTREACH_MESSAGE = """Hey {host_name}! 👋
 
 I came across your beautiful place "{place_name}" in {location} and I'd love to stay there!
 
-I'm Shubham — a Software Engineer working remotely and Founder at The Boring Education. I'm also a content creator with a combined following of 150k+ across my pages:
+I'm Sachin Shukla — a Software Engineer working remotely and Founder at The Boring Education. I'm also a content creator with a combined following of 150k+ across my pages:
 
 📱 @theboringfounder (120k+ followers)
 📱 @theboringplanks & @theboringeducation (30k+)
-💼 LinkedIn: linkedin.com/in/imsks
 
 Here's my pitch — I'd love to stay at your place and in return, I'll create high-quality content featuring your property that drives real traffic and bookings your way.
 
 Would you be open to a content collaboration? I'd love to chat more about how we can make this a win-win!
 
 Best,
-Shubham"""
+Sachin"""
 
 
 def get_outreach_message_template() -> str:
