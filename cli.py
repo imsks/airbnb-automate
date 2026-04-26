@@ -21,12 +21,15 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT_DIR))
 
-from app.config import get_outreach_message_template
+from app.config import get_flex_trip_months_count, get_outreach_message_template
+from app.locations_md import project_locations_md, read_locations_md
 from app.database import (
     create_outreach_messages,
     create_search,
@@ -71,6 +74,26 @@ def validate_date(value: str) -> str:
     return value
 
 
+def resolve_locations(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[str]:
+    """Merge ``--locations``, ``--locations-file``, and optional default ``locations.md``."""
+    locs: list[str] = list(args.locations or [])
+    if args.locations_file:
+        p = Path(args.locations_file)
+        if not p.is_file():
+            parser.error(f"Locations file not found: {p}")
+        locs.extend(read_locations_md(p))
+    elif not locs:
+        default_md = project_locations_md(ROOT_DIR)
+        if default_md.is_file():
+            locs.extend(read_locations_md(default_md))
+    if not locs:
+        parser.error(
+            "No locations: pass --locations and/or --locations-file, "
+            f"or create {project_locations_md(ROOT_DIR).name} in the project root."
+        )
+    return locs
+
+
 def setup_logging(verbose: bool = False) -> None:
     """Configure logging for CLI mode."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -95,6 +118,7 @@ def process_location(
     date_mode: str = "flexible",
     flex_duration: int = 1,
     flex_duration_unit: str = "week",
+    flex_trip_months_count: Optional[int] = None,
 ) -> dict:
     """Search a single location, pick top listings, and send outreach messages.
 
@@ -134,6 +158,7 @@ def process_location(
             date_mode=date_mode,
             flex_duration=flex_duration,
             flex_duration_unit=flex_duration_unit,
+            flex_trip_months_count=flex_trip_months_count,
         )
     except Exception as e:
         logger.error("Scraping failed for '%s': %s", location, e)
@@ -220,6 +245,7 @@ def run_cycle(
     date_mode: str = "flexible",
     flex_duration: int = 1,
     flex_duration_unit: str = "week",
+    flex_trip_months_count: Optional[int] = None,
 ) -> list[dict]:
     """Run one full cycle: scrape + outreach for every location."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -252,6 +278,7 @@ def run_cycle(
             date_mode=date_mode,
             flex_duration=flex_duration,
             flex_duration_unit=flex_duration_unit,
+            flex_trip_months_count=flex_trip_months_count,
         )
         results.append(result)
         if result.get("airbnb_rate_limited"):
@@ -298,6 +325,9 @@ Examples:
   # Run every 4 hours (Ctrl+C to stop)
   python cli.py --locations "Goa, India" "Bali, Indonesia" --schedule
 
+  # All non-empty lines from locations.md (if file exists, no --locations needed)
+  python cli.py --locations-file locations.md
+
   # Dry run: scrape only, no outreach
   python cli.py --locations "Goa, India" --dry-run
 """,
@@ -305,10 +335,16 @@ Examples:
 
     parser.add_argument(
         "--locations",
-        nargs="+",
-        required=True,
+        nargs="*",
+        default=None,
         metavar="LOCATION",
-        help='One or more Airbnb locations (e.g. "Goa, India" "Bali, Indonesia")',
+        help='Airbnb locations (optional if --locations-file or locations.md exists)',
+    )
+    parser.add_argument(
+        "--locations-file",
+        default=None,
+        metavar="PATH",
+        help="Text/markdown file: one location per non-comment line (overrides auto locations.md)",
     )
     parser.add_argument(
         "--invites",
@@ -340,10 +376,16 @@ Examples:
         help="Flexible mode: trip length (default: 1)",
     )
     parser.add_argument(
+        "--flex-trip-months",
+        type=int,
+        default=None,
+        help="How many consecutive calendar months in flexible_trip_dates[] (default: FLEX_TRIP_MONTHS_COUNT / 3)",
+    )
+    parser.add_argument(
         "--flex-duration-unit",
-        choices=["day", "week", "month"],
+        choices=["day", "week", "month", "weekend"],
         default="week",
-        help="Flexible mode: day = nights, week = 7 nights each, month = 28 nights each (default: week)",
+        help="Flexible mode: weekend, day (nights), week, month (default: week)",
     )
     parser.add_argument(
         "--checkin",
@@ -403,6 +445,7 @@ def main() -> None:
     """CLI entry point."""
     parser = build_parser()
     args = parser.parse_args()
+    resolved_locations = resolve_locations(parser, args)
 
     setup_logging(verbose=args.verbose)
 
@@ -423,6 +466,8 @@ def main() -> None:
         date_mode = "fixed"
         flex_duration = max(1, args.flex_duration)
         flex_unit = normalize_flex_duration_unit(args.flex_duration_unit)
+        if flex_unit == "weekend":
+            flex_duration = 1
     else:
         if args.checkin or args.checkout:
             parser.error(
@@ -433,9 +478,18 @@ def main() -> None:
         date_mode = "flexible"
         flex_duration = max(1, args.flex_duration)
         flex_unit = normalize_flex_duration_unit(args.flex_duration_unit)
+        if flex_unit == "weekend":
+            flex_duration = 1
+
+    flex_trip_months_count = (
+        args.flex_trip_months
+        if args.flex_trip_months is not None
+        else get_flex_trip_months_count()
+    )
+    flex_trip_months_count = max(1, min(12, flex_trip_months_count))
 
     common_kwargs = {
-        "locations": args.locations,
+        "locations": resolved_locations,
         "invites": args.invites,
         "checkin": checkin,
         "checkout": checkout,
@@ -447,12 +501,13 @@ def main() -> None:
         "date_mode": date_mode,
         "flex_duration": flex_duration,
         "flex_duration_unit": flex_unit,
+        "flex_trip_months_count": flex_trip_months_count,
     }
 
     if args.dry_run:
         # Dry-run: only scrape, no outreach
         print("🏃 Dry-run mode — scraping only, no outreach messages will be sent\n")
-        for location in args.locations:
+        for location in resolved_locations:
             print(f"\n📍 Scraping '{location}'...")
             try:
                 listings = scrape_listings_sync(
@@ -467,6 +522,7 @@ def main() -> None:
                     date_mode=date_mode,
                     flex_duration=flex_duration,
                     flex_duration_unit=flex_unit,
+                    flex_trip_months_count=flex_trip_months_count,
                 )
                 print(f"   Found {len(listings)} listings")
                 for i, lst in enumerate(listings[:args.invites], 1):

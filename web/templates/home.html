@@ -12,7 +12,14 @@
     <div class="form-group">
         <label for="location">Location *</label>
         <input type="text" id="location" name="location" required
-               placeholder="e.g., Goa, India" autofocus>
+               placeholder="e.g., Dehradun, Uttarakhand" autofocus
+               {% if file_locations %}list="location-suggestions"{% endif %}>
+        {% if file_locations %}
+        <p class="form-hint">Suggestions from <code>locations.md</code> ({{ file_locations|length }} lines). CLI can process every line with <code>--locations-file locations.md</code>.</p>
+        <datalist id="location-suggestions">
+            {% for loc in file_locations %}<option value="{{ loc }}">{% endfor %}
+        </datalist>
+        {% endif %}
     </div>
 
     <details class="preferences-toggle">
@@ -32,11 +39,18 @@
                 <div class="form-group">
                     <label for="flex_duration_unit">Unit</label>
                     <select id="flex_duration_unit" name="flex_duration_unit">
+                        <option value="weekend">Weekend trip</option>
                         <option value="day">Night(s)</option>
                         <option value="week" selected>Week(s)</option>
                         <option value="month">Month(s)</option>
                     </select>
                 </div>
+            </div>
+
+            <div class="form-group" id="flex-months-row">
+                <label for="flex_trip_months">Months in flexible window (for Airbnb URL)</label>
+                <input type="number" id="flex_trip_months" name="flex_trip_months" min="1" max="12" value="{{ flex_months_default }}">
+                <p class="form-hint">Consecutive calendar months starting this month → <code>flexible_trip_dates[]</code>. Override <code>FLEX_TRIP_MONTHS_COUNT</code> in <code>.env</code> for the default.</p>
             </div>
 
             <div class="form-row" id="fixed-dates-row" hidden>
@@ -89,6 +103,23 @@
   flexRadio.addEventListener("change", sync);
   fixedRadio.addEventListener("change", sync);
   sync();
+
+  var unitSel = document.getElementById("flex_duration_unit");
+  var durInput = document.getElementById("flex_duration");
+  var flexMonthsRow = document.getElementById("flex-months-row");
+  function syncUnit() {
+    if (unitSel.value === "weekend") {
+      durInput.value = "1";
+      durInput.disabled = true;
+    } else {
+      durInput.disabled = false;
+    }
+    if (flexMonthsRow) {
+      flexMonthsRow.hidden = unitSel.value === "day";
+    }
+  }
+  unitSel.addEventListener("change", syncUnit);
+  syncUnit();
 })();
 </script>
 

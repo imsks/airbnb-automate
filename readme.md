@@ -35,7 +35,18 @@ python run.py
 
 For a fully hands-off experience, use the CLI script. It scrapes listings and sends outreach invites automatically.
 
+**`locations.md`:** Add one location per line in the project root (lines starting with `#` are comments). If you omit `--locations`, the CLI loads `locations.md` automatically when that file exists. Use `--locations-file path/to/file.md` to read a specific file, or combine `--locations` with `--locations-file` to merge both.
+
 ```bash
+# From locations.md only (no --locations) when locations.md exists in the project root
+python cli.py
+
+# Explicit file (same format: one place per line)
+python cli.py --locations-file locations.md
+
+# Merge inline places with file lines
+python cli.py --locations "Goa, India" --locations-file locations.md
+
 # One-time run: 3 invites each to multiple locations
 python cli.py --locations "Himachal Pradesh, India" "Bali, Indonesia" "Manali, India" "Ladakh, India"
 
@@ -68,13 +79,15 @@ The CLI reuses the same persistent browser profile as the web UI.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--locations` | One or more Airbnb locations (required) | — |
+| `--locations` | One or more Airbnb locations (optional if `locations.md` or `--locations-file`) | — |
+| `--locations-file` | Markdown/text file: one location per non-comment line | — |
 | `--invites` | Outreach invites per location | 3 |
 | `--schedule` | Repeat every 4 hours | off |
 | `--interval` | Custom schedule interval in seconds | 14400 (4h) |
 | `--date-mode` | `flexible` (trip length) or `fixed` (calendar dates) | `flexible` |
 | `--flex-duration` | Trip length in flexible mode | `1` |
-| `--flex-duration-unit` | `day` (nights), `week`, or `month` | `week` |
+| `--flex-duration-unit` | `weekend`, `day` (nights), `week`, or `month` | `week` |
+| `--flex-trip-months` | Months in `flexible_trip_dates[]` (1–12); default from env | env / `3` |
 | `--checkin` | Fixed mode: check-in (YYYY-MM-DD) | — |
 | `--checkout` | Fixed mode: check-out (YYYY-MM-DD) | — |
 | `--guests` | Number of guests | 2 |
@@ -116,6 +129,7 @@ The default message introduces you as a content creator offering to create conte
 
 ```
 airbnb-automate/
+├── locations.md            # Optional: one location per line (CLI + UI hints)
 ├── run.py                  # Entry point — web UI
 ├── cli.py                  # Entry point — CLI with scheduler (autopilot)
 ├── requirements.txt        # Python dependencies
@@ -126,6 +140,7 @@ airbnb-automate/
 │   ├── models.py           # Data models (Search, Listing, OutreachMessage)
 │   ├── database.py         # SQLite database layer
 │   ├── browser_session.py  # Shared Playwright session (search + login + outreach)
+│   ├── locations_md.py     # Read locations.md (one place per line)
 │   ├── scraper.py          # Airbnb scraper (Playwright)
 │   └── outreach.py         # Host outreach automation (Playwright)
 │
@@ -143,6 +158,17 @@ airbnb-automate/
     ├── test_cli.py
     └── test_scraper.py
 ```
+
+## 📍 `locations.md` (batch locations)
+
+Put **one location per line** in the project root `locations.md` (lines starting with `#` are comments).
+
+- **CLI:** If you don’t pass `--locations`, the CLI automatically loads `locations.md` when that file exists. You can also pass `--locations-file path/to/file.md` to merge file lines with `--locations`.
+- **Web UI:** The home page reads `locations.md` and offers those lines as **datalist suggestions** for the location field.
+
+## 🔗 Flexible search URLs (week / month / weekend)
+
+Flexible searches use Airbnb-style **structured** query params (like the explore UI): `refinement_paths[]`, `flexible_trip_dates[]` (lowercase English months), `monthly_start_date` / `monthly_length` / `monthly_end_date`, `flexible_trip_lengths[]` (`one_week`, `one_month`, `weekend_trip`), and `price_filter_num_nights`. The path slug follows **“City, Region” → `City--Region`**. Set **`AIRBNB_BASE_URL`** (e.g. `https://www.airbnb.co.in`) and **`FLEX_TRIP_MONTHS_COUNT`** in `.env` to tune defaults.
 
 ## 🐢 Host messaging rate limits
 
@@ -162,6 +188,8 @@ Tune with `OUTREACH_MAX_SENDS_PER_WINDOW`, `OUTREACH_RATE_WINDOW_SECONDS`, and `
 | `FLASK_DEBUG` | Debug mode | false |
 | `FLASK_SECRET_KEY` | Session secret | dev-secret-key |
 | `DATABASE_PATH` | SQLite DB path | data/airbnb_automate.db |
+| `AIRBNB_BASE_URL` | Origin for search URLs | `https://www.airbnb.com` |
+| `FLEX_TRIP_MONTHS_COUNT` | Consecutive months in `flexible_trip_dates[]` | `3` |
 | `HEADLESS` | Run browser headless (scraping only) | true |
 | `PLAYWRIGHT_CHANNEL` | Use installed `chrome` or `msedge` instead of bundled Chromium (helps if OAuth login fails) | (bundled Chromium) |
 | `BROWSER_USER_DATA_DIR` | Persistent profile path for login sessions; set to `none` to disable | `data/airbnb_browser_profile` |

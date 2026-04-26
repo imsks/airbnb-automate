@@ -28,7 +28,7 @@ from app.browser_session import (
     open_airbnb_browser,
     save_storage_state,
 )
-from app.config import get_outreach_message_template
+from app.config import get_airbnb_base_url, get_outreach_message_template
 from app.database import (
     create_outreach_messages,
     get_listings,
@@ -45,6 +45,18 @@ from app.outreach_quota import (
 logger = logging.getLogger(__name__)
 
 
+def _airbnb_origin() -> str:
+    return get_airbnb_base_url().rstrip("/")
+
+
+def _login_url() -> str:
+    return f"{_airbnb_origin()}/login"
+
+
+def _trips_url() -> str:
+    return f"{_airbnb_origin()}/trips"
+
+
 class AirbnbHostQuotaUIError(Exception):
     """Airbnb surfaced an in-app host messaging cap — stop and try again later."""
 
@@ -55,9 +67,6 @@ _AIRBNB_HOST_QUOTA_MARKERS = (
     "wait a few hours before you can send",
     "you'll need to wait a few hours",
 )
-
-AIRBNB_BASE_URL = "https://www.airbnb.com"
-LOGIN_URL = f"{AIRBNB_BASE_URL}/login"
 
 # Named constants for timeouts and delays
 LOGIN_CHECK_INTERVAL_MS = 5000
@@ -93,7 +102,6 @@ async def _async_sleep_ms(ms: int) -> None:
     """Do not use Page.wait_for_timeout for idle pauses: it throws if the tab was closed."""
     await asyncio.sleep(ms / 1000.0)
 
-_TRIPS_PATH = f"{AIRBNB_BASE_URL}/trips"
 _PROFILE_SELECTORS = (
     '[data-testid="cypress-headernav-profile"], '
     'header a[href*="/users/"], '
@@ -169,13 +177,13 @@ async def _airbnb_trip_url_confirms_session(page: Page) -> bool:
     """A logged-in user can load /trips; guests are sent to /login (or the URL keeps login)."""
     try:
         await page.goto(
-            _TRIPS_PATH, wait_until="domcontentloaded", timeout=30000
+            _trips_url(), wait_until="domcontentloaded", timeout=30000
         )
         await _async_sleep_ms(2000)
         u = (page.url or "").lower()
         if "/login" in u or "/signup" in u or "authenticate" in u:
             return False
-        if "trips" in u or (AIRBNB_BASE_URL in u and "login" not in u and "signup" not in u):
+        if "trips" in u or (_airbnb_origin() in u and "login" not in u and "signup" not in u):
             return True
     except Exception as e:  # pragma: no cover
         logger.debug("trips session check: %s", e)
@@ -194,7 +202,7 @@ async def _session_fully_ready(page: Page, context: BrowserContext) -> bool:
     if not page.url or "about:blank" in page.url:
         try:
             await page.goto(
-                AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=20000
+                _airbnb_origin(), wait_until="domcontentloaded", timeout=20000
             )
         except Exception:
             pass
@@ -248,7 +256,7 @@ async def wait_for_airbnb_session_ready(
                     try:
                         if not pg.is_closed():
                             await pg.goto(
-                                AIRBNB_BASE_URL,
+                                _airbnb_origin(),
                                 wait_until="domcontentloaded",
                                 timeout=30000,
                             )
@@ -261,7 +269,7 @@ async def wait_for_airbnb_session_ready(
                         try:
                             if not pg.is_closed():
                                 await pg.goto(
-                                    AIRBNB_BASE_URL,
+                                    _airbnb_origin(),
                                     wait_until="domcontentloaded",
                                     timeout=30000,
                                 )
@@ -272,7 +280,7 @@ async def wait_for_airbnb_session_ready(
                     w = _first_open_page(context) or work
                     if not w.is_closed():
                         await w.goto(
-                            AIRBNB_BASE_URL,
+                            _airbnb_origin(),
                             wait_until="domcontentloaded",
                             timeout=30000,
                         )
@@ -289,7 +297,7 @@ async def wait_for_airbnb_session_ready(
             w = _first_open_page(context) or work
             if not w.is_closed():
                 await w.goto(
-                    LOGIN_URL, wait_until="domcontentloaded", timeout=30000
+                    _login_url(), wait_until="domcontentloaded", timeout=30000
                 )
                 work = w
         except Exception as e:
@@ -315,7 +323,7 @@ async def wait_for_airbnb_session_ready(
                 try:
                     work = await context.new_page()
                     await work.goto(
-                        LOGIN_URL, wait_until="domcontentloaded", timeout=30000
+                        _login_url(), wait_until="domcontentloaded", timeout=30000
                     )
                     logger.info("Opened a new tab for login (no usable tab was left).")
                 except Exception as e:
@@ -342,7 +350,7 @@ async def wait_for_airbnb_session_ready(
                     if await _airbnb_trip_url_confirms_session(pg):
                         try:
                             await pg.goto(
-                                AIRBNB_BASE_URL,
+                                _airbnb_origin(),
                                 wait_until="domcontentloaded",
                                 timeout=30000,
                             )
@@ -364,7 +372,7 @@ async def wait_for_airbnb_session_ready(
                         try:
                             if not w2.is_closed():
                                 await w2.goto(
-                                    AIRBNB_BASE_URL,
+                                    _airbnb_origin(),
                                     wait_until="domcontentloaded",
                                     timeout=30000,
                                 )
@@ -414,7 +422,7 @@ async def _use_airbnb_page_for_outreach(
         w = await context.new_page()
     try:
         await w.goto(
-            AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=30000
+            _airbnb_origin(), wait_until="domcontentloaded", timeout=30000
         )
     except Exception:  # pragma: no cover
         pass
@@ -446,7 +454,7 @@ async def login_to_airbnb() -> bool:
 
         try:
             await page.goto(
-                AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=30000
+                _airbnb_origin(), wait_until="domcontentloaded", timeout=30000
             )
             await _async_sleep_ms(1500)
             return await wait_for_airbnb_session_ready(page, context)
@@ -472,7 +480,7 @@ async def check_airbnb_login_status() -> bool:
                 pw, headless=True
             )
             await page.goto(
-                AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=20000
+                _airbnb_origin(), wait_until="domcontentloaded", timeout=20000
             )
             await _async_sleep_ms(2000)
             return await _is_logged_in(page)
@@ -676,7 +684,7 @@ async def _send_message_to_host(
     """
     listing_url = listing.url
     if not listing_url:
-        listing_url = f"{AIRBNB_BASE_URL}/rooms/{listing.id}"
+        listing_url = f"{_airbnb_origin()}/rooms/{listing.id}"
 
     logger.info("Opening listing: %s", listing_url)
     await page.goto(listing_url, wait_until="domcontentloaded", timeout=60_000)
@@ -786,7 +794,7 @@ async def run_outreach(
 
         try:
             await page.goto(
-                AIRBNB_BASE_URL, wait_until="domcontentloaded", timeout=30000
+                _airbnb_origin(), wait_until="domcontentloaded", timeout=30000
             )
             await _async_sleep_ms(1500)
 

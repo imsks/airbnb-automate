@@ -9,16 +9,31 @@ import pytest
 # Ensure project root is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from cli import build_parser, setup_logging, validate_date
+from cli import build_parser, resolve_locations, setup_logging, validate_date
 
 
 class TestBuildParser:
     """Tests for CLI argument parsing."""
 
-    def test_locations_required(self):
+    def test_parse_args_without_locations_ok(self):
         parser = build_parser()
+        args = parser.parse_args([])
+        assert not args.locations
+
+    def test_resolve_locations_errors_when_file_only_has_comments(self, tmp_path):
+        empty = tmp_path / "e.md"
+        empty.write_text("# nothing here\n", encoding="utf-8")
+        parser = build_parser()
+        args = parser.parse_args(["--locations-file", str(empty)])
         with pytest.raises(SystemExit):
-            parser.parse_args([])
+            resolve_locations(parser, args)
+
+    def test_resolve_locations_from_file(self, tmp_path):
+        loc_file = tmp_path / "x.md"
+        loc_file.write_text("# c\nFoo\n\nBar\n", encoding="utf-8")
+        parser = build_parser()
+        args = parser.parse_args(["--locations-file", str(loc_file)])
+        assert resolve_locations(parser, args) == ["Foo", "Bar"]
 
     def test_single_location(self):
         parser = build_parser()

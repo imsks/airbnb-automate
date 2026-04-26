@@ -73,7 +73,10 @@ class Search(BaseModel):
             if self.checkout:
                 return f"{self.checkin} → {self.checkout}"
             return self.checkin
-        unit = (self.flex_duration_unit or "week").lower().rstrip("s")
+        raw_unit = (self.flex_duration_unit or "week").lower()
+        if raw_unit == "weekend":
+            return "Flexible · weekend trip"
+        unit = raw_unit.rstrip("s")
         n = self.flex_duration or 1
         label = {"day": "night", "week": "week", "month": "month"}.get(unit, "week")
         if unit == "day":

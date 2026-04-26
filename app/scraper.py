@@ -268,9 +268,8 @@ async def _parse_listing_card(card, location: str) -> Optional[Listing]:
     if link_el:
         href = await link_el.get_attribute("href")
         if href:
-            listing.url = (
-                f"{AIRBNB_BASE_URL}{href}" if href.startswith("/") else href
-            )
+            base = get_airbnb_base_url()
+            listing.url = f"{base}{href}" if href.startswith("/") else href
             # Extract listing ID from URL
             id_match = re.search(r"/rooms/(\d+)", href)
             if id_match:
@@ -337,6 +336,8 @@ async def scrape_listings(
     date_mode: str = "flexible",
     flex_duration: int = 1,
     flex_duration_unit: str = "week",
+    flex_trip_months_count: Optional[int] = None,
+    reference_date: Optional[date] = None,
 ) -> list[Listing]:
     """Scrape Airbnb search results for the given parameters.
 

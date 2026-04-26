@@ -7,7 +7,8 @@ from typing import Optional
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 
-from app.config import get_outreach_message_template
+from app.config import get_flex_trip_months_count, get_outreach_message_template
+from app.locations_md import project_locations_md, read_locations_md
 from app.database import (
     init_db,
     create_search,
@@ -24,6 +25,8 @@ from app.outreach import login_to_airbnb_sync, run_outreach_sync
 from app.scraper import scrape_listings_sync
 
 logger = logging.getLogger(__name__)
+
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # Track running background processes
 _outreach_threads: dict[int, threading.Thread] = {}
@@ -92,11 +95,15 @@ def create_app() -> Flask:
         login_running = (
             "login" in _login_thread and _login_thread["login"].is_alive()
         )
+        loc_md = project_locations_md(_PROJECT_ROOT)
+        file_locations = read_locations_md(loc_md)
         return render_template(
             "home.html",
             searches=searches,
             login_running=login_running,
             login_status=_login_result.get("status"),
+            file_locations=file_locations,
+            flex_months_default=get_flex_trip_months_count(),
         )
 
     @app.route("/search", methods=["POST"])
@@ -120,12 +127,23 @@ def create_app() -> Flask:
             flex_duration = max(1, int(flex_duration_raw))
         except ValueError:
             flex_duration = 1
-        if flex_unit_raw not in ("day", "week", "month"):
+        if flex_unit_raw not in ("day", "week", "month", "weekend"):
             flex_unit_raw = "week"
+        if flex_unit_raw == "weekend":
+            flex_duration = 1
 
         guests = int(request.form.get("guests", 2) or 2)
         min_price = request.form.get("min_price", "")
         max_price = request.form.get("max_price", "")
+        flex_months_raw = request.form.get("flex_trip_months", "").strip()
+        try:
+            flex_trip_months_count = (
+                max(1, min(12, int(flex_months_raw)))
+                if flex_months_raw
+                else get_flex_trip_months_count()
+            )
+        except ValueError:
+            flex_trip_months_count = get_flex_trip_months_count()
 
         if date_mode == "fixed":
             search_record = Search(
@@ -167,6 +185,7 @@ def create_app() -> Flask:
                 date_mode=date_mode,
                 flex_duration=flex_duration,
                 flex_duration_unit=flex_unit_raw,
+                flex_trip_months_count=flex_trip_months_count,
             )
 
             saved = save_listings(listings, search_id)
