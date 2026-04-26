@@ -24,12 +24,59 @@ cp .env.example .env
 # Edit .env if you want to change port, database path, or message template
 ```
 
-### 3. Run
+### 3. Run — Web UI
 
 ```bash
 python run.py
 # Open http://localhost:5000
 ```
+
+### 4. Run — CLI (Autopilot Mode) 🤖
+
+For a fully hands-off experience, use the CLI script. It scrapes listings and sends outreach invites automatically.
+
+```bash
+# One-time run: 3 invites each to multiple locations
+python cli.py --locations "Goa, India" "Bali, Indonesia" "Manali, India"
+
+# Send 5 invites per location with date and price filters
+python cli.py --locations "Goa, India" "Pondicherry, India" \
+              --invites 5 --checkin 2026-07-01 --checkout 2026-07-07 \
+              --min-price 20 --max-price 120
+
+# Run on autopilot every 4 hours (Ctrl+C to stop)
+python cli.py --locations "Goa, India" "Bali, Indonesia" --schedule
+
+# Dry run: scrape only, no messages sent
+python cli.py --locations "Goa, India" --dry-run
+
+# Show the browser window (for debugging)
+python cli.py --locations "Goa, India" --no-headless
+```
+
+**Important:** You must log in to Airbnb **once** before using the CLI for outreach. Either:
+- Use the web UI (`python run.py` → click "🔐 Login to Airbnb"), or
+- Start Chrome with `--remote-debugging-port` and set `CHROME_CDP_URL` in `.env` (see `.env.example`)
+
+The CLI reuses the same persistent browser profile as the web UI.
+
+#### CLI Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--locations` | One or more Airbnb locations (required) | — |
+| `--invites` | Outreach invites per location | 3 |
+| `--schedule` | Repeat every 4 hours | off |
+| `--interval` | Custom schedule interval in seconds | 14400 (4h) |
+| `--checkin` | Check-in date (YYYY-MM-DD) | — |
+| `--checkout` | Check-out date (YYYY-MM-DD) | — |
+| `--guests` | Number of guests | 2 |
+| `--min-price` | Minimum price per night | — |
+| `--max-price` | Maximum price per night | — |
+| `--message` | Custom message template | Built-in |
+| `--dry-run` | Scrape only, skip outreach | off |
+| `--no-headless` | Show the browser window | off |
+| `-v, --verbose` | Debug logging | off |
 
 That's it! The landing page lets you enter a location and optional preferences (dates, guests, price range). Hit search, and the app scrapes Airbnb and shows you the results.
 
@@ -62,7 +109,8 @@ The default message introduces you as a content creator offering to create conte
 
 ```
 airbnb-automate/
-├── run.py                  # Entry point — just run this
+├── run.py                  # Entry point — web UI
+├── cli.py                  # Entry point — CLI with scheduler (autopilot)
 ├── requirements.txt        # Python dependencies
 ├── .env.example            # Environment variables template
 │
@@ -85,6 +133,7 @@ airbnb-automate/
 │
 └── tests/                  # Test suite
     ├── test_database.py
+    ├── test_cli.py
     └── test_scraper.py
 ```
 
