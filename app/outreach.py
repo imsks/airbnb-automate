@@ -36,8 +36,25 @@ from app.database import (
     update_outreach_status,
 )
 from app.models import Listing, OutreachMessage, OutreachStatus
+from app.outreach_quota import (
+    record_successful_send,
+    sleep_between_outreach_attempts,
+    wait_until_send_allowed,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class AirbnbHostQuotaUIError(Exception):
+    """Airbnb surfaced an in-app host messaging cap — stop and try again later."""
+
+
+# Copy varies slightly by locale; match substrings seen in English UI.
+_AIRBNB_HOST_QUOTA_MARKERS = (
+    "already messaged several hosts",
+    "wait a few hours before you can send",
+    "you'll need to wait a few hours",
+)
 
 AIRBNB_BASE_URL = "https://www.airbnb.com"
 LOGIN_URL = f"{AIRBNB_BASE_URL}/login"
@@ -45,7 +62,7 @@ LOGIN_URL = f"{AIRBNB_BASE_URL}/login"
 # Named constants for timeouts and delays
 LOGIN_CHECK_INTERVAL_MS = 5000
 LOGIN_MAX_CHECKS = 60  # 60 checks × 5s = 5 minutes max wait
-MESSAGE_DELAY_MS = 2000
+MESSAGE_DELAY_MS = 2000  # short pause inside single-message flow only
 
 
 def _is_target_disconnected_error(exc: BaseException) -> bool:
@@ -575,8 +592,25 @@ async def _open_contact_or_message_cta(p: Page) -> bool:
     return False
 
 
+async def _raise_if_airbnb_host_quota_screen(page: Page) -> None:
+    """If Airbnb shows the host-message rate banner, raise :class:`AirbnbHostQuotaUIError`."""
+    try:
+        body = page.locator("body")
+        text = (await body.inner_text(timeout=8000)).lower()
+    except Exception:
+        return
+    for marker in _AIRBNB_HOST_QUOTA_MARKERS:
+        if marker in text:
+            raise AirbnbHostQuotaUIError(
+                "Airbnb limit: you've messaged several hosts — wait a few hours "
+                "before sending more (in-app cap)."
+            )
+
+
 async def _wait_for_visible_composer(p: Page) -> Locator:
-    for _ in range(45):
+    for attempt in range(45):
+        if attempt % 4 == 0:
+            await _raise_if_airbnb_host_quota_screen(p)
         await _try_expand_collapsed_panels(p)
         for sc in _message_scopes(p):
             try:
@@ -602,6 +636,7 @@ async def _wait_for_visible_composer(p: Page) -> Locator:
                 except Exception:
                     continue
         await _async_sleep_ms(700)
+    await _raise_if_airbnb_host_quota_screen(p)
     raise Exception(
         "Message composer (textarea) did not become visible — try a wider window or complete "
         "any required steps in the message panel"
@@ -650,6 +685,7 @@ async def _send_message_to_host(
     except Exception:  # pragma: no cover
         pass
     await _async_sleep_ms(2000)
+    await _raise_if_airbnb_host_quota_screen(page)
 
     if not await _open_contact_or_message_cta(page):
         raise Exception(
@@ -657,7 +693,9 @@ async def _send_message_to_host(
         )
 
     await _async_sleep_ms(2000)
+    await _raise_if_airbnb_host_quota_screen(page)
     ta = await _wait_for_visible_composer(page)
+    await _raise_if_airbnb_host_quota_screen(page)
     await ta.click()
     await ta.fill(message)
     await _async_sleep_ms(400)
@@ -666,6 +704,7 @@ async def _send_message_to_host(
         raise Exception("Send / Send message control stayed hidden — panel may need to be expanded")
 
     await _async_sleep_ms(2000)
+    await _raise_if_airbnb_host_quota_screen(page)
     logger.info("Message sent to %s for '%s'", listing.host_name or "host", listing.title)
 
 
@@ -694,7 +733,13 @@ async def run_outreach(
     listings = get_listings(search_id, db_path)
     if not listings:
         logger.warning("No listings found for search %d", search_id)
-        return {"total": 0, "sent": 0, "failed": 0, "skipped": 0}
+        return {
+            "total": 0,
+            "sent": 0,
+            "failed": 0,
+            "skipped": 0,
+            "airbnb_rate_limited": False,
+        }
 
     # Create outreach records for new listings
     create_outreach_messages(search_id, listings, message_template, db_path)
@@ -710,9 +755,16 @@ async def run_outreach(
             "sent": sum(1 for m in messages if m.status == OutreachStatus.SENT),
             "failed": sum(1 for m in messages if m.status == OutreachStatus.FAILED),
             "skipped": sum(1 for m in messages if m.status == OutreachStatus.SKIPPED),
+            "airbnb_rate_limited": False,
         }
 
-    summary = {"total": len(messages), "sent": 0, "failed": 0, "skipped": 0}
+    summary = {
+        "total": len(messages),
+        "sent": 0,
+        "failed": 0,
+        "skipped": 0,
+        "airbnb_rate_limited": False,
+    }
 
     async with async_playwright() as pw:
         context, browser, uses_cdp = None, None, False
@@ -751,9 +803,8 @@ async def run_outreach(
 
             page = await _use_airbnb_page_for_outreach(page, context)
 
-            # Send messages
-            for msg in pending:
-                # Find the corresponding listing
+            # Send messages (global sliding-window cap + spacing — see outreach_quota / .env)
+            for idx, msg in enumerate(pending):
                 listing = next(
                     (lst for lst in listings if lst.id == msg.listing_id), None
                 )
@@ -762,19 +813,39 @@ async def run_outreach(
                         msg.id, OutreachStatus.SKIPPED, "Listing not found", db_path
                     )
                     summary["skipped"] += 1
+                    await sleep_between_outreach_attempts()
                     continue
 
+                await wait_until_send_allowed(db_path)
                 update_outreach_status(msg.id, OutreachStatus.SENDING, "", db_path)
 
                 try:
                     await _send_message_to_host(page, listing, msg.message)
                     update_outreach_status(msg.id, OutreachStatus.SENT, "", db_path)
                     summary["sent"] += 1
+                    record_successful_send(db_path)
                     logger.info(
                         "✅ Sent message to %s (%s)",
                         msg.host_name,
                         msg.place_name,
                     )
+                except AirbnbHostQuotaUIError as e:
+                    error_msg = str(e)
+                    update_outreach_status(
+                        msg.id, OutreachStatus.SKIPPED, error_msg, db_path
+                    )
+                    summary["skipped"] += 1
+                    summary["airbnb_rate_limited"] = True
+                    logger.error("🛑 Airbnb host messaging cap: %s", error_msg)
+                    for msg2 in pending[idx + 1 :]:
+                        update_outreach_status(
+                            msg2.id,
+                            OutreachStatus.SKIPPED,
+                            "Paused: Airbnb rate limit — try again in a few hours.",
+                            db_path,
+                        )
+                        summary["skipped"] += 1
+                    break
                 except Exception as e:
                     error_msg = str(e)
                     update_outreach_status(
@@ -785,8 +856,7 @@ async def run_outreach(
                         "❌ Failed to send to %s: %s", msg.host_name, error_msg
                     )
 
-                # Small delay between messages to avoid rate limiting
-                await _async_sleep_ms(MESSAGE_DELAY_MS)
+                await sleep_between_outreach_attempts()
 
         except Exception as e:
             logger.error("Outreach error: %s", e)

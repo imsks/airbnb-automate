@@ -139,12 +139,26 @@ def process_location(
         logger.error("Scraping failed for '%s': %s", location, e)
         update_search_status(search_id, SearchStatus.FAILED, 0)
         print(f"❌ Scraping failed for '{location}': {e}")
-        return {"location": location, "scraped": 0, "sent": 0, "failed": 0, "skipped": 0}
+        return {
+            "location": location,
+            "scraped": 0,
+            "sent": 0,
+            "failed": 0,
+            "skipped": 0,
+            "airbnb_rate_limited": False,
+        }
 
     if not listings:
         update_search_status(search_id, SearchStatus.COMPLETED, 0)
         print(f"⚠️  No listings found for '{location}'")
-        return {"location": location, "scraped": 0, "sent": 0, "failed": 0, "skipped": 0}
+        return {
+            "location": location,
+            "scraped": 0,
+            "sent": 0,
+            "failed": 0,
+            "skipped": 0,
+            "airbnb_rate_limited": False,
+        }
 
     saved = save_listings(listings, search_id)
     update_search_status(search_id, SearchStatus.COMPLETED, len(listings))
@@ -167,11 +181,23 @@ def process_location(
     except Exception as e:
         logger.error("Outreach failed for '%s': %s", location, e)
         print(f"❌ Outreach error for '{location}': {e}")
-        return {"location": location, "scraped": len(listings), "sent": 0, "failed": len(target_listings), "skipped": 0}
+        return {
+            "location": location,
+            "scraped": len(listings),
+            "sent": 0,
+            "failed": len(target_listings),
+            "skipped": 0,
+            "airbnb_rate_limited": False,
+        }
 
     print(f"\n📊 Results for '{location}':")
     print(f"   Scraped: {len(listings)} | Sent: {summary.get('sent', 0)} | "
           f"Failed: {summary.get('failed', 0)} | Skipped: {summary.get('skipped', 0)}")
+    if summary.get("airbnb_rate_limited"):
+        print(
+            "   🛑 Airbnb capped host messages — remaining invites were skipped. "
+            "Wait a few hours before the next run."
+        )
 
     return {
         "location": location,
@@ -228,6 +254,13 @@ def run_cycle(
             flex_duration_unit=flex_duration_unit,
         )
         results.append(result)
+        if result.get("airbnb_rate_limited"):
+            print(
+                "\n⏸️  Stopping this cycle — Airbnb in-app messaging limit was hit. "
+                "Later locations are skipped; quota settings: OUTREACH_MAX_SENDS_PER_WINDOW / "
+                "OUTREACH_RATE_WINDOW_SECONDS in .env"
+            )
+            break
 
     # Print overall summary
     total_scraped = sum(r.get("scraped", 0) for r in results)

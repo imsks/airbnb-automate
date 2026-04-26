@@ -144,6 +144,16 @@ airbnb-automate/
     └── test_scraper.py
 ```
 
+## 🐢 Host messaging rate limits
+
+Airbnb blocks bulk messaging (“you’ve already messaged several hosts today…”). This app:
+
+1. **Sliding window** — By default at most **5 successful sends per 3 hours** (across *all* locations and runs), stored in SQLite (`outreach_send_log`). If you hit the cap, outreach **waits** until a slot frees up (good for scheduled CLI runs in the background).
+2. **Spacing** — Default **120 seconds** between each attempt so five sends are spread out instead of instant.
+3. **Stop on Airbnb UI** — If Airbnb shows the in-app limit banner, outreach **stops**, marks remaining invites as skipped, and the CLI **skips later locations** in the same cycle.
+
+Tune with `OUTREACH_MAX_SENDS_PER_WINDOW`, `OUTREACH_RATE_WINDOW_SECONDS`, and `OUTREACH_INTER_MESSAGE_DELAY_SECONDS` (see `.env.example`).
+
 ## ⚙️ Environment Variables
 
 | Variable | Description | Default |
@@ -157,6 +167,9 @@ airbnb-automate/
 | `BROWSER_USER_DATA_DIR` | Persistent profile path for login sessions; set to `none` to disable | `data/airbnb_browser_profile` |
 | `BROWSER_USER_AGENT` | Force a custom User-Agent (rarely needed) | (browser default) |
 | `OUTREACH_MESSAGE` | Custom outreach message template | Built-in template |
+| `OUTREACH_MAX_SENDS_PER_WINDOW` | Max successful messages per sliding window (global) | `5` |
+| `OUTREACH_RATE_WINDOW_SECONDS` | Sliding window length in seconds | `10800` (3h) |
+| `OUTREACH_INTER_MESSAGE_DELAY_SECONDS` | Minimum pause between each send attempt | `120` |
 
 ## 🧪 Testing
 

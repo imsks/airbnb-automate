@@ -124,6 +124,11 @@ def init_db(db_path: Optional[str] = None) -> None:
                 FOREIGN KEY (search_id) REFERENCES searches(id),
                 FOREIGN KEY (listing_id) REFERENCES listings(id)
             );
+
+            CREATE TABLE IF NOT EXISTS outreach_send_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sent_at REAL NOT NULL
+            );
         """)
         _migrate_searches_flexible_columns(conn)
         _migrate_listings_search_id(conn)
@@ -138,6 +143,10 @@ def init_db(db_path: Optional[str] = None) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_outreach_listing "
             "ON outreach_messages(listing_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outreach_send_log_sent_at "
+            "ON outreach_send_log(sent_at)"
         )
         conn.commit()
     finally:
@@ -443,5 +452,87 @@ def update_outreach_status(
                 (status.value, error, message_id),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Global outreach send rate (sliding window, all searches / CLI runs) ---
+
+
+def outreach_send_log_prune(
+    db_path: Optional[str] = None,
+    *,
+    max_age_seconds: float = 86400 * 14,
+) -> None:
+    """Drop old send log rows so the table stays small."""
+    import time
+
+    cutoff = time.time() - max_age_seconds
+    conn = get_connection(db_path)
+    try:
+        conn.execute("DELETE FROM outreach_send_log WHERE sent_at < ?", (cutoff,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def outreach_send_log_record(
+    db_path: Optional[str] = None,
+    sent_at: Optional[float] = None,
+) -> None:
+    """Record one successful host message (Unix timestamp)."""
+    import time
+
+    ts = time.time() if sent_at is None else float(sent_at)
+    conn = get_connection(db_path)
+    try:
+        conn.execute("INSERT INTO outreach_send_log (sent_at) VALUES (?)", (ts,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def outreach_send_log_count_in_window(
+    db_path: Optional[str],
+    window_sec: float,
+    *,
+    now: Optional[float] = None,
+) -> int:
+    """How many sends recorded in (now - window_sec, now]."""
+    import time
+
+    n = time.time() if now is None else float(now)
+    cutoff = n - float(window_sec)
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM outreach_send_log WHERE sent_at > ?",
+            (cutoff,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def outreach_send_log_oldest_in_window(
+    db_path: Optional[str],
+    window_sec: float,
+    *,
+    now: Optional[float] = None,
+) -> Optional[float]:
+    """Earliest sent_at still inside the sliding window, or None if empty."""
+    import time
+
+    n = time.time() if now is None else float(now)
+    cutoff = n - float(window_sec)
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT MIN(sent_at) FROM outreach_send_log WHERE sent_at > ?",
+            (cutoff,),
+        ).fetchone()
+        if row and row[0] is not None:
+            return float(row[0])
+        return None
     finally:
         conn.close()

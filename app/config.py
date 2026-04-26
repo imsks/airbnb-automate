@@ -97,3 +97,33 @@ Sachin"""
 def get_outreach_message_template() -> str:
     """Get the outreach message template."""
     return os.getenv("OUTREACH_MESSAGE", DEFAULT_OUTREACH_MESSAGE)
+
+
+def get_outreach_max_sends_per_window() -> int:
+    """Max successful host messages per sliding time window (global across all searches)."""
+    raw = (os.getenv("OUTREACH_MAX_SENDS_PER_WINDOW") or "5").strip()
+    return max(1, int(raw))
+
+
+def get_outreach_rate_window_seconds() -> int:
+    """Sliding window length in seconds (default 3 hours)."""
+    raw = (os.getenv("OUTREACH_RATE_WINDOW_SECONDS") or str(3 * 3600)).strip()
+    return max(60, int(raw))
+
+
+def get_outreach_inter_message_delay_seconds() -> float:
+    """Minimum pause between each outreach attempt (success or failure), in seconds."""
+    raw = (os.getenv("OUTREACH_INTER_MESSAGE_DELAY_SECONDS") or "120").strip()
+    return max(0.0, float(raw))
+
+
+def get_airbnb_base_url() -> str:
+    """Site origin for search URLs (e.g. https://www.airbnb.co.in or .com)."""
+    raw = (os.getenv("AIRBNB_BASE_URL") or "https://www.airbnb.com").strip().rstrip("/")
+    return raw or "https://www.airbnb.com"
+
+
+def get_flex_trip_months_count() -> int:
+    """How many consecutive calendar months to pass as ``flexible_trip_dates[]`` (flexible search)."""
+    raw = (os.getenv("FLEX_TRIP_MONTHS_COUNT") or "3").strip()
+    return max(1, min(12, int(raw)))
