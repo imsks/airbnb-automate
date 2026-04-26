@@ -6,8 +6,9 @@ import asyncio
 from typing import Optional
 from urllib.parse import quote_plus
 
-from playwright.async_api import async_playwright, Page, Browser
+from playwright.async_api import async_playwright, Page
 
+from app.browser_session import close_airbnb_session, open_airbnb_browser
 from app.models import Listing
 
 logger = logging.getLogger(__name__)
@@ -195,16 +196,9 @@ async def scrape_listings(
     all_listings: list[Listing] = []
 
     async with async_playwright() as p:
-        browser: Browser = await p.chromium.launch(headless=headless)
-        context = await browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
+        context, page, browser, uses_cdp = await open_airbnb_browser(
+            p, headless=headless
         )
-        page = await context.new_page()
 
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -248,7 +242,7 @@ async def scrape_listings(
         except Exception as e:
             logger.error("Error scraping Airbnb: %s", e)
         finally:
-            await browser.close()
+            await close_airbnb_session(context, browser, uses_cdp=uses_cdp)
 
     # Trim to max
     return all_listings[:max_listings]

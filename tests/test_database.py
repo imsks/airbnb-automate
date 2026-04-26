@@ -14,8 +14,11 @@ from app.database import (
     update_search_status,
     save_listings,
     get_listings,
+    create_outreach_messages,
+    get_outreach_messages,
+    update_outreach_status,
 )
-from app.models import Listing, Search, SearchStatus
+from app.models import Listing, OutreachMessage, OutreachStatus, Search, SearchStatus
 
 
 @pytest.fixture
@@ -155,3 +158,104 @@ def test_search_with_optional_fields(db_path):
     assert retrieved.checkin == ""
     assert retrieved.min_price is None
     assert retrieved.max_price is None
+
+
+def test_create_outreach_messages(db_path):
+    """Test creating outreach messages for listings."""
+    search = Search(location="Goa, India")
+    sid = create_search(search, db_path)
+
+    listings = [
+        Listing(id="111", title="Beach Villa", host_name="Alice", location="Goa, India"),
+        Listing(id="222", title="Mountain Lodge", host_name="Bob", location="Goa, India"),
+    ]
+    save_listings(listings, sid, db_path)
+
+    template = "Hi {host_name}, I love {place_name} in {location}!"
+    messages = create_outreach_messages(sid, listings, template, db_path)
+
+    assert len(messages) == 2
+    assert messages[0].host_name == "Alice"
+    assert "Beach Villa" in messages[0].message
+    assert messages[1].host_name == "Bob"
+    assert "Mountain Lodge" in messages[1].message
+    assert all(m.status == OutreachStatus.PENDING for m in messages)
+
+
+def test_get_outreach_messages(db_path):
+    """Test retrieving outreach messages for a search."""
+    search = Search(location="Bali")
+    sid = create_search(search, db_path)
+
+    listings = [
+        Listing(id="333", title="Treehouse", host_name="Charlie", location="Bali"),
+    ]
+    save_listings(listings, sid, db_path)
+
+    template = "Hi {host_name}!"
+    create_outreach_messages(sid, listings, template, db_path)
+
+    messages = get_outreach_messages(sid, db_path)
+    assert len(messages) == 1
+    assert messages[0].listing_id == "333"
+    assert messages[0].host_name == "Charlie"
+
+
+def test_update_outreach_status(db_path):
+    """Test updating outreach message status."""
+    search = Search(location="Paris")
+    sid = create_search(search, db_path)
+
+    listings = [
+        Listing(id="444", title="Parisian Flat", host_name="Diana", location="Paris"),
+    ]
+    save_listings(listings, sid, db_path)
+
+    template = "Hi {host_name}!"
+    messages = create_outreach_messages(sid, listings, template, db_path)
+
+    # Update to sent
+    update_outreach_status(messages[0].id, OutreachStatus.SENT, "", db_path)
+    updated = get_outreach_messages(sid, db_path)
+    assert updated[0].status == OutreachStatus.SENT
+    assert updated[0].sent_at is not None
+
+
+def test_update_outreach_status_failed(db_path):
+    """Test updating outreach message status to failed with error."""
+    search = Search(location="Tokyo")
+    sid = create_search(search, db_path)
+
+    listings = [
+        Listing(id="555", title="Tokyo Apartment", host_name="Eve", location="Tokyo"),
+    ]
+    save_listings(listings, sid, db_path)
+
+    template = "Hi {host_name}!"
+    messages = create_outreach_messages(sid, listings, template, db_path)
+
+    update_outreach_status(messages[0].id, OutreachStatus.FAILED, "Connection timeout", db_path)
+    updated = get_outreach_messages(sid, db_path)
+    assert updated[0].status == OutreachStatus.FAILED
+    assert updated[0].error == "Connection timeout"
+
+
+def test_duplicate_outreach_messages_skipped(db_path):
+    """Test that duplicate outreach messages are not created."""
+    search = Search(location="Goa")
+    sid = create_search(search, db_path)
+
+    listings = [
+        Listing(id="666", title="Beach Shack", host_name="Frank", location="Goa"),
+    ]
+    save_listings(listings, sid, db_path)
+
+    template = "Hi {host_name}!"
+    first = create_outreach_messages(sid, listings, template, db_path)
+    second = create_outreach_messages(sid, listings, template, db_path)
+
+    assert len(first) == 1
+    assert len(second) == 0  # Already exists, skipped
+
+    all_messages = get_outreach_messages(sid, db_path)
+    assert len(all_messages) == 1
