@@ -59,9 +59,26 @@ class Search(BaseModel):
     guests: int = 2
     min_price: Optional[float] = None
     max_price: Optional[float] = None
+    date_mode: str = "flexible"
+    flex_duration: int = 1
+    flex_duration_unit: str = "week"
     status: SearchStatus = SearchStatus.SEARCHING
     listings_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def date_summary(self) -> str:
+        """Human-readable dates / flexible trip for UI."""
+        mode = (self.date_mode or "flexible").lower()
+        if mode == "fixed" and self.checkin:
+            if self.checkout:
+                return f"{self.checkin} → {self.checkout}"
+            return self.checkin
+        unit = (self.flex_duration_unit or "week").lower().rstrip("s")
+        n = self.flex_duration or 1
+        label = {"day": "night", "week": "week", "month": "month"}.get(unit, "week")
+        if unit == "day":
+            return f"Flexible · {n} night{'s' if n != 1 else ''}"
+        return f"Flexible · {n} {label}{'s' if n != 1 else ''}"
 
 
 class OutreachMessage(BaseModel):

@@ -18,6 +18,26 @@ def _listings_table_columns(conn: sqlite3.Connection) -> set[str]:
     return {r[1] for r in conn.execute("PRAGMA table_info(listings)")}
 
 
+def _migrate_searches_flexible_columns(conn: sqlite3.Connection) -> None:
+    """Add date_mode / flex duration columns for flexible-trip searches."""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='searches'"
+    ).fetchone()
+    if not row:
+        return
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(searches)")}
+    if "date_mode" not in columns:
+        conn.execute(
+            "ALTER TABLE searches ADD COLUMN date_mode TEXT DEFAULT 'flexible'"
+        )
+    if "flex_duration" not in columns:
+        conn.execute("ALTER TABLE searches ADD COLUMN flex_duration INTEGER DEFAULT 1")
+    if "flex_duration_unit" not in columns:
+        conn.execute(
+            "ALTER TABLE searches ADD COLUMN flex_duration_unit TEXT DEFAULT 'week'"
+        )
+
+
 def _migrate_listings_search_id(conn: sqlite3.Connection) -> None:
     """Ensure listings has search_id (legacy DBs used campaign_id or predate the column)."""
     columns = _listings_table_columns(conn)
@@ -59,6 +79,9 @@ def init_db(db_path: Optional[str] = None) -> None:
                 guests INTEGER DEFAULT 2,
                 min_price REAL,
                 max_price REAL,
+                date_mode TEXT DEFAULT 'flexible',
+                flex_duration INTEGER DEFAULT 1,
+                flex_duration_unit TEXT DEFAULT 'week',
                 status TEXT DEFAULT 'searching',
                 listings_count INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -102,6 +125,7 @@ def init_db(db_path: Optional[str] = None) -> None:
                 FOREIGN KEY (listing_id) REFERENCES listings(id)
             );
         """)
+        _migrate_searches_flexible_columns(conn)
         _migrate_listings_search_id(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_listings_search "
@@ -129,8 +153,9 @@ def create_search(search: Search, db_path: Optional[str] = None) -> int:
     try:
         cursor = conn.execute(
             """INSERT INTO searches
-               (location, checkin, checkout, guests, min_price, max_price, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (location, checkin, checkout, guests, min_price, max_price,
+                date_mode, flex_duration, flex_duration_unit, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 search.location,
                 search.checkin,
@@ -138,6 +163,9 @@ def create_search(search: Search, db_path: Optional[str] = None) -> int:
                 search.guests,
                 search.min_price,
                 search.max_price,
+                search.date_mode,
+                search.flex_duration,
+                search.flex_duration_unit,
                 search.status.value,
             ),
         )
@@ -156,19 +184,30 @@ def get_search(search_id: int, db_path: Optional[str] = None) -> Optional[Search
         ).fetchone()
         if not row:
             return None
-        return Search(
-            id=row["id"],
-            location=row["location"],
-            checkin=row["checkin"],
-            checkout=row["checkout"],
-            guests=row["guests"],
-            min_price=row["min_price"],
-            max_price=row["max_price"],
-            status=SearchStatus(row["status"]),
-            listings_count=row["listings_count"],
-        )
+        return _search_from_row(row)
     finally:
         conn.close()
+
+
+def _search_from_row(row: sqlite3.Row) -> Search:
+    """Build Search from DB row, tolerating legacy DBs without flex columns."""
+    keys = row.keys()
+    return Search(
+        id=row["id"],
+        location=row["location"],
+        checkin=row["checkin"],
+        checkout=row["checkout"],
+        guests=row["guests"],
+        min_price=row["min_price"],
+        max_price=row["max_price"],
+        date_mode=row["date_mode"] if "date_mode" in keys else "flexible",
+        flex_duration=row["flex_duration"] if "flex_duration" in keys else 1,
+        flex_duration_unit=row["flex_duration_unit"]
+        if "flex_duration_unit" in keys
+        else "week",
+        status=SearchStatus(row["status"]),
+        listings_count=row["listings_count"],
+    )
 
 
 def get_searches(db_path: Optional[str] = None) -> list[Search]:
@@ -179,20 +218,7 @@ def get_searches(db_path: Optional[str] = None) -> list[Search]:
             "SELECT * FROM searches ORDER BY created_at DESC"
         ).fetchall()
 
-        return [
-            Search(
-                id=row["id"],
-                location=row["location"],
-                checkin=row["checkin"],
-                checkout=row["checkout"],
-                guests=row["guests"],
-                min_price=row["min_price"],
-                max_price=row["max_price"],
-                status=SearchStatus(row["status"]),
-                listings_count=row["listings_count"],
-            )
-            for row in rows
-        ]
+        return [_search_from_row(row) for row in rows]
     finally:
         conn.close()
 

@@ -9,7 +9,7 @@
         <div>
             <h1>📍 {{ search.location }}</h1>
             <p class="results-meta">
-                {% if search.checkin %}📅 {{ search.checkin }}{% if search.checkout %} → {{ search.checkout }}{% endif %} · {% endif %}
+                📅 {{ search.date_summary() }} ·
                 👥 {{ search.guests }} guests
                 {% if search.min_price is not none or search.max_price is not none %}
                 · 💰 {% if search.min_price is not none %}${{ search.min_price|int }}{% else %}$0{% endif %}–{% if search.max_price is not none %}${{ search.max_price|int }}{% else %}any{% endif %}/night

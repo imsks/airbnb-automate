@@ -66,11 +66,20 @@ class TestBuildParser:
         parser = build_parser()
         args = parser.parse_args([
             "--locations", "Goa",
+            "--date-mode", "fixed",
             "--checkin", "2026-07-01",
             "--checkout", "2026-07-07",
         ])
         assert args.checkin == "2026-07-01"
         assert args.checkout == "2026-07-07"
+        assert args.date_mode == "fixed"
+
+    def test_flexible_duration_defaults(self):
+        parser = build_parser()
+        args = parser.parse_args(["--locations", "Goa"])
+        assert args.date_mode == "flexible"
+        assert args.flex_duration == 1
+        assert args.flex_duration_unit == "week"
 
     def test_guest_filter(self):
         parser = build_parser()
@@ -122,6 +131,7 @@ class TestBuildParser:
             "--invites", "5",
             "--schedule",
             "--interval", "7200",
+            "--date-mode", "fixed",
             "--checkin", "2026-08-01",
             "--checkout", "2026-08-07",
             "--guests", "3",

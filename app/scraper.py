@@ -15,6 +15,33 @@ logger = logging.getLogger(__name__)
 
 AIRBNB_BASE_URL = "https://www.airbnb.com"
 
+# Airbnb flexible trip presets (URL enum values)
+_FLEX_PRESET_WEEK = "one_week"
+_FLEX_PRESET_MONTH = "one_month"
+
+
+def normalize_flex_duration_unit(unit: str) -> str:
+    """Normalize day(s) / week(s) / month(s) to day | week | month."""
+    u = (unit or "week").strip().lower().rstrip("s")
+    if u in ("day", "week", "month"):
+        return u
+    raise ValueError(f"Invalid flex duration unit: {unit!r}")
+
+
+def flexible_trip_nights(duration: int, unit: str) -> int:
+    """Convert flexible duration to a night count for Airbnb's price filter.
+
+    Day unit is interpreted as *nights* (e.g. duration=3 → 3 nights).
+    Month uses 28 nights per month to match Airbnb's flexible month bucket.
+    """
+    u = normalize_flex_duration_unit(unit)
+    d = max(1, int(duration))
+    if u == "day":
+        return d
+    if u == "week":
+        return d * 7
+    return d * 28
+
 
 def build_search_url(
     location: str,
@@ -23,16 +50,23 @@ def build_search_url(
     guests: int = 2,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
+    *,
+    date_mode: str = "flexible",
+    flex_duration: int = 1,
+    flex_duration_unit: str = "week",
 ) -> str:
     """Build an Airbnb search URL from parameters.
 
     Args:
         location: Search location (e.g., "Goa, India")
-        checkin: Check-in date in YYYY-MM-DD format (optional)
-        checkout: Check-out date in YYYY-MM-DD format (optional)
+        checkin: Check-in date in YYYY-MM-DD format (fixed mode)
+        checkout: Check-out date in YYYY-MM-DD format (fixed mode)
         guests: Number of guests
         min_price: Minimum price per night (optional)
         max_price: Maximum price per night (optional)
+        date_mode: ``flexible`` (trip length) or ``fixed`` (calendar dates)
+        flex_duration: Length when ``date_mode`` is ``flexible`` (default 1)
+        flex_duration_unit: ``day``, ``week``, or ``month`` (nights / 7-night blocks / 28-night blocks)
 
     Returns:
         Fully constructed Airbnb search URL
@@ -42,10 +76,24 @@ def build_search_url(
         f"adults={guests}",
     ]
 
-    if checkin:
-        params.append(f"checkin={checkin}")
-    if checkout:
-        params.append(f"checkout={checkout}")
+    mode = (date_mode or "flexible").strip().lower()
+    if mode == "fixed":
+        if checkin:
+            params.append(f"checkin={checkin}")
+        if checkout:
+            params.append(f"checkout={checkout}")
+    else:
+        # Flexible dates: duration-based search (no calendar check-in/out in URL)
+        nights = flexible_trip_nights(flex_duration, flex_duration_unit)
+        params.append("date_picker_type=flexible_dates")
+        params.append(f"price_filter_num_nights={nights}")
+        u = normalize_flex_duration_unit(flex_duration_unit)
+        d = max(1, int(flex_duration))
+        if d == 1 and u == "week":
+            params.append(f"flexible_trip_lengths[]={_FLEX_PRESET_WEEK}")
+        elif d == 1 and u == "month":
+            params.append(f"flexible_trip_lengths[]={_FLEX_PRESET_MONTH}")
+
     if min_price is not None:
         params.append(f"price_min={int(min_price)}")
     if max_price is not None:
@@ -171,6 +219,10 @@ async def scrape_listings(
     max_price: Optional[float] = None,
     max_listings: int = 20,
     headless: bool = True,
+    *,
+    date_mode: str = "flexible",
+    flex_duration: int = 1,
+    flex_duration_unit: str = "week",
 ) -> list[Listing]:
     """Scrape Airbnb search results for the given parameters.
 
@@ -179,18 +231,31 @@ async def scrape_listings(
 
     Args:
         location: Search location
-        checkin: Check-in date (YYYY-MM-DD) (optional)
-        checkout: Check-out date (YYYY-MM-DD) (optional)
+        checkin: Check-in date (YYYY-MM-DD) (fixed mode)
+        checkout: Check-out date (YYYY-MM-DD) (fixed mode)
         guests: Number of guests
         min_price: Minimum price filter
         max_price: Maximum price filter
         max_listings: Maximum number of listings to collect
         headless: Run browser in headless mode
+        date_mode: ``flexible`` or ``fixed``
+        flex_duration: Trip length when using flexible mode
+        flex_duration_unit: ``day``, ``week``, or ``month``
 
     Returns:
         List of Listing objects found
     """
-    url = build_search_url(location, checkin, checkout, guests, min_price, max_price)
+    url = build_search_url(
+        location,
+        checkin,
+        checkout,
+        guests,
+        min_price,
+        max_price,
+        date_mode=date_mode,
+        flex_duration=flex_duration,
+        flex_duration_unit=flex_duration_unit,
+    )
     logger.info("Searching Airbnb: %s", url)
 
     all_listings: list[Listing] = []
@@ -257,6 +322,10 @@ def scrape_listings_sync(
     max_price: Optional[float] = None,
     max_listings: int = 20,
     headless: bool = True,
+    *,
+    date_mode: str = "flexible",
+    flex_duration: int = 1,
+    flex_duration_unit: str = "week",
 ) -> list[Listing]:
     """Synchronous wrapper for scrape_listings."""
     return asyncio.run(
@@ -269,5 +338,8 @@ def scrape_listings_sync(
             max_price=max_price,
             max_listings=max_listings,
             headless=headless,
+            date_mode=date_mode,
+            flex_duration=flex_duration,
+            flex_duration_unit=flex_duration_unit,
         )
     )

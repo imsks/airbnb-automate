@@ -37,7 +37,7 @@ from app.database import (
 )
 from app.models import Search, SearchStatus
 from app.outreach import run_outreach_sync
-from app.scraper import scrape_listings_sync
+from app.scraper import normalize_flex_duration_unit, scrape_listings_sync
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,9 @@ def process_location(
     max_price: Optional[float] = None,
     message_template: Optional[str] = None,
     headless: bool = True,
+    date_mode: str = "flexible",
+    flex_duration: int = 1,
+    flex_duration_unit: str = "week",
 ) -> dict:
     """Search a single location, pick top listings, and send outreach messages.
 
@@ -109,6 +112,9 @@ def process_location(
         guests=guests,
         min_price=min_price,
         max_price=max_price,
+        date_mode=date_mode,
+        flex_duration=flex_duration,
+        flex_duration_unit=flex_duration_unit,
     )
     search_id = create_search(search)
     logger.info("Created search #%d for '%s'", search_id, location)
@@ -125,6 +131,9 @@ def process_location(
             max_price=max_price,
             max_listings=invites * 3,  # fetch extra so we have choices
             headless=headless,
+            date_mode=date_mode,
+            flex_duration=flex_duration,
+            flex_duration_unit=flex_duration_unit,
         )
     except Exception as e:
         logger.error("Scraping failed for '%s': %s", location, e)
@@ -182,6 +191,9 @@ def run_cycle(
     max_price: Optional[float] = None,
     message_template: Optional[str] = None,
     headless: bool = True,
+    date_mode: str = "flexible",
+    flex_duration: int = 1,
+    flex_duration_unit: str = "week",
 ) -> list[dict]:
     """Run one full cycle: scrape + outreach for every location."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -189,6 +201,11 @@ def run_cycle(
     print(f"🚀 Starting outreach cycle at {now}")
     print(f"   Locations: {', '.join(locations)}")
     print(f"   Invites per location: {invites}")
+    if date_mode == "fixed" and checkin:
+        print(f"   Dates: fixed {checkin} → {checkout or '?'}")
+    else:
+        print(f"   Dates: flexible · {flex_duration} {flex_duration_unit}(s)")
+    print(f"   Browser: {'headless' if headless else 'visible'}")
     print(f"{'#'*60}")
 
     results = []
@@ -206,6 +223,9 @@ def run_cycle(
             max_price=max_price,
             message_template=message_template,
             headless=headless,
+            date_mode=date_mode,
+            flex_duration=flex_duration,
+            flex_duration_unit=flex_duration_unit,
         )
         results.append(result)
 
@@ -235,8 +255,11 @@ Examples:
   # One-time run for multiple locations (3 invites each, the default)
   python cli.py --locations "Goa, India" "Bali, Indonesia" "Manali, India"
 
-  # Send 5 invites per location with date filters
-  python cli.py --locations "Goa, India" --invites 5 \\
+  # Flexible trip (default): 2 weeks — browser runs headless
+  python cli.py --locations "Goa, India" --invites 5 --flex-duration 2 --flex-duration-unit week
+
+  # Fixed calendar dates
+  python cli.py --locations "Goa, India" --date-mode fixed \\
                 --checkin 2026-07-01 --checkout 2026-07-07
 
   # Run every 4 hours (Ctrl+C to stop)
@@ -272,16 +295,34 @@ Examples:
         help="Schedule interval in seconds (default: 14400 = 4 hours). Only used with --schedule",
     )
     parser.add_argument(
+        "--date-mode",
+        choices=["flexible", "fixed"],
+        default="flexible",
+        help="flexible = trip length (default); fixed = --checkin and --checkout required",
+    )
+    parser.add_argument(
+        "--flex-duration",
+        type=int,
+        default=1,
+        help="Flexible mode: trip length (default: 1)",
+    )
+    parser.add_argument(
+        "--flex-duration-unit",
+        choices=["day", "week", "month"],
+        default="week",
+        help="Flexible mode: day = nights, week = 7 nights each, month = 28 nights each (default: week)",
+    )
+    parser.add_argument(
         "--checkin",
         type=validate_date,
         default=None,
-        help="Check-in date (YYYY-MM-DD)",
+        help="Fixed mode: check-in (YYYY-MM-DD)",
     )
     parser.add_argument(
         "--checkout",
         type=validate_date,
         default=None,
-        help="Check-out date (YYYY-MM-DD)",
+        help="Fixed mode: check-out (YYYY-MM-DD)",
     )
     parser.add_argument(
         "--guests",
@@ -314,7 +355,7 @@ Examples:
     parser.add_argument(
         "--no-headless",
         action="store_true",
-        help="Show the browser window (default: headless)",
+        help="Show the browser (default: headless — recommended for CLI)",
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -339,18 +380,40 @@ def main() -> None:
     print("🔧 Initializing database...")
     init_db()
 
+    # CLI defaults to headless; use --no-headless only when debugging.
     headless = not args.no_headless
+
+    if args.date_mode == "fixed":
+        if not args.checkin or not args.checkout:
+            parser.error("--date-mode fixed requires both --checkin and --checkout")
+        checkin, checkout = args.checkin, args.checkout
+        date_mode = "fixed"
+        flex_duration = max(1, args.flex_duration)
+        flex_unit = normalize_flex_duration_unit(args.flex_duration_unit)
+    else:
+        if args.checkin or args.checkout:
+            parser.error(
+                "Flexible mode does not use --checkin/--checkout; "
+                "pass --date-mode fixed for calendar dates"
+            )
+        checkin, checkout = None, None
+        date_mode = "flexible"
+        flex_duration = max(1, args.flex_duration)
+        flex_unit = normalize_flex_duration_unit(args.flex_duration_unit)
 
     common_kwargs = {
         "locations": args.locations,
         "invites": args.invites,
-        "checkin": args.checkin,
-        "checkout": args.checkout,
+        "checkin": checkin,
+        "checkout": checkout,
         "guests": args.guests,
         "min_price": args.min_price,
         "max_price": args.max_price,
         "message_template": args.message,
         "headless": headless,
+        "date_mode": date_mode,
+        "flex_duration": flex_duration,
+        "flex_duration_unit": flex_unit,
     }
 
     if args.dry_run:
@@ -361,13 +424,16 @@ def main() -> None:
             try:
                 listings = scrape_listings_sync(
                     location=location,
-                    checkin=args.checkin,
-                    checkout=args.checkout,
+                    checkin=checkin,
+                    checkout=checkout,
                     guests=args.guests,
                     min_price=args.min_price,
                     max_price=args.max_price,
                     max_listings=args.invites * 3,
                     headless=headless,
+                    date_mode=date_mode,
+                    flex_duration=flex_duration,
+                    flex_duration_unit=flex_unit,
                 )
                 print(f"   Found {len(listings)} listings")
                 for i, lst in enumerate(listings[:args.invites], 1):

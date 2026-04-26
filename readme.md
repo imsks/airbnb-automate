@@ -37,20 +37,24 @@ For a fully hands-off experience, use the CLI script. It scrapes listings and se
 
 ```bash
 # One-time run: 3 invites each to multiple locations
-python cli.py --locations "Goa, India" "Bali, Indonesia" "Manali, India"
+python cli.py --locations "Himachal Pradesh, India" "Bali, Indonesia" "Manali, India" "Ladakh, India"
 
-# Send 5 invites per location with date and price filters
+# Default: flexible trip (1 week), headless browser — 5 invites, price filters
 python cli.py --locations "Goa, India" "Pondicherry, India" \
-              --invites 5 --checkin 2026-07-01 --checkout 2026-07-07 \
+              --invites 5 --flex-duration 1 --flex-duration-unit week \
               --min-price 20 --max-price 120
 
+# Fixed calendar dates
+python cli.py --locations "Goa, India" --date-mode fixed \
+              --checkin 2026-07-01 --checkout 2026-07-07
+
 # Run on autopilot every 4 hours (Ctrl+C to stop)
-python cli.py --locations "Goa, India" "Bali, Indonesia" --schedule
+python cli.py --locations "Himachal Pradesh, India" "Bali, Indonesia" "Manali, India" "Ladakh, India" --schedule
 
 # Dry run: scrape only, no messages sent
 python cli.py --locations "Goa, India" --dry-run
 
-# Show the browser window (for debugging)
+# Debug only: show the browser (CLI runs headless by default)
 python cli.py --locations "Goa, India" --no-headless
 ```
 
@@ -68,14 +72,17 @@ The CLI reuses the same persistent browser profile as the web UI.
 | `--invites` | Outreach invites per location | 3 |
 | `--schedule` | Repeat every 4 hours | off |
 | `--interval` | Custom schedule interval in seconds | 14400 (4h) |
-| `--checkin` | Check-in date (YYYY-MM-DD) | — |
-| `--checkout` | Check-out date (YYYY-MM-DD) | — |
+| `--date-mode` | `flexible` (trip length) or `fixed` (calendar dates) | `flexible` |
+| `--flex-duration` | Trip length in flexible mode | `1` |
+| `--flex-duration-unit` | `day` (nights), `week`, or `month` | `week` |
+| `--checkin` | Fixed mode: check-in (YYYY-MM-DD) | — |
+| `--checkout` | Fixed mode: check-out (YYYY-MM-DD) | — |
 | `--guests` | Number of guests | 2 |
 | `--min-price` | Minimum price per night | — |
 | `--max-price` | Maximum price per night | — |
 | `--message` | Custom message template | Built-in |
 | `--dry-run` | Scrape only, skip outreach | off |
-| `--no-headless` | Show the browser window | off |
+| `--no-headless` | Show the browser (default is headless) | off |
 | `-v, --verbose` | Debug logging | off |
 
 That's it! The landing page lets you enter a location and optional preferences (dates, guests, price range). Hit search, and the app scrapes Airbnb and shows you the results.
@@ -83,7 +90,7 @@ That's it! The landing page lets you enter a location and optional preferences (
 ## 📋 How It Works
 
 1. **Enter a location** on the landing page (e.g., "Goa, India")
-2. **Add optional preferences** — check-in/out dates, guests, price range
+2. **Add optional preferences** — flexible trip length (nights / weeks / months) or fixed check-in/out, plus guests and price range
 3. **Hit Search** — the app scrapes Airbnb listings matching your criteria
 4. **View results** — listings are saved to the database and displayed in the UI
 5. **Login to Airbnb** — click "🔐 Login to Airbnb" (one-time step, session is saved)

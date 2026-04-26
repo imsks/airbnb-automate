@@ -18,7 +18,28 @@
     <details class="preferences-toggle">
         <summary>Preferences (optional)</summary>
         <div class="preferences-grid">
-            <div class="form-row">
+            <div class="form-group">
+                <span class="label-text">Trip dates</span>
+                <label class="radio-row"><input type="radio" name="date_mode" value="flexible" checked id="date_mode_flex"> Flexible length (recommended)</label>
+                <label class="radio-row"><input type="radio" name="date_mode" value="fixed" id="date_mode_fixed"> Fixed check-in / check-out</label>
+            </div>
+
+            <div class="form-row" id="flex-duration-row">
+                <div class="form-group">
+                    <label for="flex_duration">Trip length</label>
+                    <input type="number" id="flex_duration" name="flex_duration" value="1" min="1" max="52">
+                </div>
+                <div class="form-group">
+                    <label for="flex_duration_unit">Unit</label>
+                    <select id="flex_duration_unit" name="flex_duration_unit">
+                        <option value="day">Night(s)</option>
+                        <option value="week" selected>Week(s)</option>
+                        <option value="month">Month(s)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-row" id="fixed-dates-row" hidden>
                 <div class="form-group">
                     <label for="checkin">Check-in</label>
                     <input type="date" id="checkin" name="checkin">
@@ -54,6 +75,23 @@
     </div>
 </form>
 
+<script>
+(function () {
+  var flexRadio = document.getElementById("date_mode_flex");
+  var fixedRadio = document.getElementById("date_mode_fixed");
+  var flexRow = document.getElementById("flex-duration-row");
+  var fixedRow = document.getElementById("fixed-dates-row");
+  function sync() {
+    var flex = flexRadio.checked;
+    flexRow.hidden = !flex;
+    fixedRow.hidden = flex;
+  }
+  flexRadio.addEventListener("change", sync);
+  fixedRadio.addEventListener("change", sync);
+  sync();
+})();
+</script>
+
 {% if searches %}
 <section class="past-searches">
     <h2>Past Searches</h2>
@@ -65,7 +103,7 @@
                 <span class="badge status-{{ search.status.value }}">{{ search.status.value }}</span>
             </div>
             <div class="search-card-meta">
-                {% if search.checkin %}📅 {{ search.checkin }}{% if search.checkout %} → {{ search.checkout }}{% endif %}{% endif %}
+                📅 {{ search.date_summary() }}
                 {% if search.listings_count > 0 %}· {{ search.listings_count }} listings{% endif %}
             </div>
         </a>

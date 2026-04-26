@@ -107,20 +107,50 @@ def create_app() -> Flask:
             flash("Location is required.", "error")
             return redirect(url_for("home"))
 
-        checkin = request.form.get("checkin", "")
-        checkout = request.form.get("checkout", "")
+        date_mode = (request.form.get("date_mode") or "flexible").strip().lower()
+        if date_mode not in ("flexible", "fixed"):
+            date_mode = "flexible"
+
+        checkin = request.form.get("checkin", "").strip()
+        checkout = request.form.get("checkout", "").strip()
+        flex_duration_raw = request.form.get("flex_duration", "1") or "1"
+        flex_unit_raw = (request.form.get("flex_duration_unit") or "week").strip().lower()
+
+        try:
+            flex_duration = max(1, int(flex_duration_raw))
+        except ValueError:
+            flex_duration = 1
+        if flex_unit_raw not in ("day", "week", "month"):
+            flex_unit_raw = "week"
+
         guests = int(request.form.get("guests", 2) or 2)
         min_price = request.form.get("min_price", "")
         max_price = request.form.get("max_price", "")
 
-        search_record = Search(
-            location=location,
-            checkin=checkin,
-            checkout=checkout,
-            guests=guests,
-            min_price=float(min_price) if min_price else None,
-            max_price=float(max_price) if max_price else None,
-        )
+        if date_mode == "fixed":
+            search_record = Search(
+                location=location,
+                checkin=checkin,
+                checkout=checkout,
+                guests=guests,
+                min_price=float(min_price) if min_price else None,
+                max_price=float(max_price) if max_price else None,
+                date_mode="fixed",
+                flex_duration=flex_duration,
+                flex_duration_unit=flex_unit_raw,
+            )
+        else:
+            search_record = Search(
+                location=location,
+                checkin="",
+                checkout="",
+                guests=guests,
+                min_price=float(min_price) if min_price else None,
+                max_price=float(max_price) if max_price else None,
+                date_mode="flexible",
+                flex_duration=flex_duration,
+                flex_duration_unit=flex_unit_raw,
+            )
         search_id = create_search(search_record)
 
         # Run the scraper
@@ -128,12 +158,15 @@ def create_app() -> Flask:
             headless = os.getenv("HEADLESS", "true").lower() == "true"
             listings = scrape_listings_sync(
                 location=location,
-                checkin=checkin if checkin else None,
-                checkout=checkout if checkout else None,
+                checkin=checkin if date_mode == "fixed" and checkin else None,
+                checkout=checkout if date_mode == "fixed" and checkout else None,
                 guests=guests,
                 min_price=float(min_price) if min_price else None,
                 max_price=float(max_price) if max_price else None,
                 headless=headless,
+                date_mode=date_mode,
+                flex_duration=flex_duration,
+                flex_duration_unit=flex_unit_raw,
             )
 
             saved = save_listings(listings, search_id)
