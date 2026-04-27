@@ -262,7 +262,7 @@ def save_listings(
     try:
         for listing in listings:
             try:
-                conn.execute(
+                cur = conn.execute(
                     """INSERT OR IGNORE INTO listings
                        (id, search_id, url, title, host_name, location,
                         price_per_night, currency, rating, review_count,
@@ -289,7 +289,8 @@ def save_listings(
                         1 if listing.superhost else 0,
                     ),
                 )
-                saved += 1
+                if cur.rowcount > 0:
+                    saved += 1
             except sqlite3.IntegrityError:
                 continue
         conn.commit()
@@ -299,12 +300,29 @@ def save_listings(
 
 
 def get_listings(search_id: int, db_path: Optional[str] = None) -> list[Listing]:
-    """Get all listings for a search."""
+    """Get all listings for a search.
+
+    Includes rows with ``search_id`` set to this search, and rows that appear in
+    ``outreach_messages`` for this search. The latter is required because
+    ``listings.id`` is a global primary key: ``INSERT OR IGNORE`` skips rows
+    already stored from an older search, so ``search_id`` on the row may not
+    match a new run while ``outreach_messages`` still points at those listing
+    ids.
+    """
     conn = get_connection(db_path)
     try:
         rows = conn.execute(
-            "SELECT * FROM listings WHERE search_id = ? ORDER BY rating DESC",
-            (search_id,),
+            """
+            SELECT * FROM (
+                SELECT l.* FROM listings l WHERE l.search_id = ?
+                UNION
+                SELECT l.* FROM listings l
+                INNER JOIN outreach_messages om
+                    ON om.listing_id = l.id AND om.search_id = ?
+            ) AS combined
+            ORDER BY rating DESC
+            """,
+            (search_id, search_id),
         ).fetchall()
 
         return [
@@ -333,6 +351,23 @@ def get_listings(search_id: int, db_path: Optional[str] = None) -> list[Listing]
 
 
 # --- Outreach Operations ---
+
+
+def has_sent_outreach_to_listing(
+    listing_id: str, db_path: Optional[str] = None
+) -> bool:
+    """True if any row has successfully sent a message to this listing (any search)."""
+    if not (listing_id or "").strip():
+        return False
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM outreach_messages WHERE listing_id = ? AND status = ? LIMIT 1",
+            (listing_id, OutreachStatus.SENT.value),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def create_outreach_messages(
@@ -368,6 +403,10 @@ def create_outreach_messages(
                 (search_id, listing.id),
             ).fetchone()
             if existing:
+                continue
+
+            # Never queue another message if we already sent to this host/listing (any search)
+            if has_sent_outreach_to_listing(listing.id, db_path):
                 continue
 
             cursor = conn.execute(

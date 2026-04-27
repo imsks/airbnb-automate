@@ -53,9 +53,19 @@ def record_successful_send(db_path: Optional[str] = None) -> None:
 
 
 async def sleep_between_outreach_attempts() -> None:
-    """Spread attempts out even within a quota window."""
+    """Spread attempts out even within a quota window.
+
+    Logs the wait so a long default delay (e.g. 120s) does not look like a hang.
+    """
     base = get_outreach_inter_message_delay_seconds()
     if base <= 0:
         return
     jitter = random.uniform(0, min(45.0, base * 0.25))
-    await asyncio.sleep(base + jitter)
+    total = base + jitter
+    msg = (
+        f"⏳ Pausing ~{total:.0f}s before next host "
+        f"(OUTREACH_INTER_MESSAGE_DELAY_SECONDS; use 0 in .env to skip)"
+    )
+    print(msg, flush=True)
+    logger.info(msg)
+    await asyncio.sleep(total)

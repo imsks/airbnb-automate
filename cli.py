@@ -34,11 +34,12 @@ from app.database import (
     create_outreach_messages,
     create_search,
     get_listings,
+    has_sent_outreach_to_listing,
     init_db,
     save_listings,
     update_search_status,
 )
-from app.models import Search, SearchStatus
+from app.models import Listing, Search, SearchStatus
 from app.outreach import run_outreach_sync
 from app.scraper import normalize_flex_duration_unit, scrape_listings_sync
 
@@ -104,6 +105,31 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
+def select_outreach_targets(
+    listings: list[Listing], invites: int, db_path: Optional[str] = None
+) -> tuple[list[Listing], int]:
+    """Choose up to ``invites`` listings, in scrape order, excluding any listing id we already
+    messaged successfully (SENT) in a prior run. Returns (targets, n_skipped_due_to_prior_send).
+    """
+    out: list[Listing] = []
+    seen_ids: set[str] = set()
+    skipped_prior = 0
+    for lst in listings:
+        if len(out) >= invites:
+            break
+        lid = (lst.id or "").strip()
+        if not lid:
+            continue
+        if lid in seen_ids:
+            continue
+        seen_ids.add(lid)
+        if has_sent_outreach_to_listing(lid, db_path):
+            skipped_prior += 1
+            continue
+        out.append(lst)
+    return out, skipped_prior
+
+
 def process_location(
     location: str,
     *,
@@ -143,8 +169,8 @@ def process_location(
     search_id = create_search(search)
     logger.info("Created search #%d for '%s'", search_id, location)
 
-    # 2. Scrape listings
-    print(f"🔍 Scraping Airbnb listings for '{location}'...")
+    # 1. Scrape first (outreach runs only after scrape completes for this location)
+    print(f"📥 Phase 1 — Scrape: '{location}'")
     try:
         listings = scrape_listings_sync(
             location=location,
@@ -187,37 +213,58 @@ def process_location(
 
     saved = save_listings(listings, search_id)
     update_search_status(search_id, SearchStatus.COMPLETED, len(listings))
-    print(f"✅ Found {len(listings)} listings (saved {saved} new)")
+    print(f"   ✅ {len(listings)} listings scraped ({saved} new rows saved)")
 
-    # 3. Pick top N listings for outreach (sorted by rating already from scraper)
-    target_listings = listings[:invites]
-    print(f"📨 Sending invites to top {len(target_listings)} hosts...")
-
-    for i, lst in enumerate(target_listings, 1):
-        host = lst.host_name or "Host"
-        print(f"   {i}. {lst.title} — hosted by {host} (⭐ {lst.rating})")
-
-    # 4. Create outreach messages and run outreach
-    template = message_template or get_outreach_message_template()
-    create_outreach_messages(search_id, target_listings, template)
-
-    try:
-        summary = run_outreach_sync(search_id, template)
-    except Exception as e:
-        logger.error("Outreach failed for '%s': %s", location, e)
-        print(f"❌ Outreach error for '{location}': {e}")
+    # 2. Outreach: walk URLs in order, skip already-SENT, continue on per-listing errors
+    print(f"📤 Phase 2 — Outreach: up to {invites} host(s) (skipping any already messaged)")
+    target_listings, skipped_prior = select_outreach_targets(listings, invites)
+    if skipped_prior:
+        print(
+            f"   ⏭️  Skipped {skipped_prior} result(s) in order — already sent in a past run"
+        )
+    if not target_listings:
+        print("   ⚠️  No hosts to message (all top results were already contacted).")
         return {
             "location": location,
             "scraped": len(listings),
+            "total": 0,
             "sent": 0,
-            "failed": len(target_listings),
-            "skipped": 0,
+            "failed": 0,
+            "skipped": skipped_prior,
+            "airbnb_rate_limited": False,
+        }
+
+    for i, lst in enumerate(target_listings, 1):
+        host = lst.host_name or "Host"
+        url = (lst.url or "").strip() or f"(room {lst.id})"
+        print(f"   {i}. {url}")
+        print(f"      {lst.title} — {host} (⭐ {lst.rating})")
+
+    template = message_template or get_outreach_message_template()
+    create_outreach_messages(search_id, target_listings, template)
+    summary = run_outreach_sync(search_id, template)
+
+    if summary.get("error"):
+        logger.error("Outreach failed for '%s': %s", location, summary["error"])
+        print(f"❌ Outreach error for '{location}': {summary['error']}")
+        return {
+            "location": location,
+            "scraped": len(listings),
+            "sent": summary.get("sent", 0),
+            "failed": summary.get("failed", 0),
+            "skipped": summary.get("skipped", 0),
             "airbnb_rate_limited": False,
         }
 
     print(f"\n📊 Results for '{location}':")
-    print(f"   Scraped: {len(listings)} | Sent: {summary.get('sent', 0)} | "
-          f"Failed: {summary.get('failed', 0)} | Skipped: {summary.get('skipped', 0)}")
+    print(
+        f"   Scraped: {len(listings)} | Sent: {summary.get('sent', 0)} | "
+        f"Failed: {summary.get('failed', 0)} | Skipped: {summary.get('skipped', 0)}"
+    )
+    if skipped_prior:
+        print(
+            f"   (Plus {skipped_prior} skipped before queue — already contacted)"
+        )
     if summary.get("airbnb_rate_limited"):
         print(
             "   🛑 Airbnb capped host messages — remaining invites were skipped. "
@@ -227,6 +274,7 @@ def process_location(
     return {
         "location": location,
         "scraped": len(listings),
+        "skipped_prior": skipped_prior,
         **summary,
     }
 
@@ -250,7 +298,7 @@ def run_cycle(
     """Run one full cycle: scrape + outreach for every location."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"\n{'#'*60}")
-    print(f"🚀 Starting outreach cycle at {now}")
+    print(f"🚀 Starting cycle at {now} (each location: scrape → then outreach)")
     print(f"   Locations: {', '.join(locations)}")
     print(f"   Invites per location: {invites}")
     if date_mode == "fixed" and checkin:

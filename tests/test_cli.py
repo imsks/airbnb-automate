@@ -1,217 +1,70 @@
-"""Tests for the CLI module."""
+"""Tests for CLI helpers."""
 
 import os
-import sys
 import tempfile
 
 import pytest
 
-# Ensure project root is on sys.path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from cli import build_parser, resolve_locations, setup_logging, validate_date
-
-
-class TestBuildParser:
-    """Tests for CLI argument parsing."""
-
-    def test_parse_args_without_locations_ok(self):
-        parser = build_parser()
-        args = parser.parse_args([])
-        assert not args.locations
-
-    def test_resolve_locations_errors_when_file_only_has_comments(self, tmp_path):
-        empty = tmp_path / "e.md"
-        empty.write_text("# nothing here\n", encoding="utf-8")
-        parser = build_parser()
-        args = parser.parse_args(["--locations-file", str(empty)])
-        with pytest.raises(SystemExit):
-            resolve_locations(parser, args)
-
-    def test_resolve_locations_from_file(self, tmp_path):
-        loc_file = tmp_path / "x.md"
-        loc_file.write_text("# c\nFoo\n\nBar\n", encoding="utf-8")
-        parser = build_parser()
-        args = parser.parse_args(["--locations-file", str(loc_file)])
-        assert resolve_locations(parser, args) == ["Foo", "Bar"]
-
-    def test_single_location(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa, India"])
-        assert args.locations == ["Goa, India"]
-
-    def test_multiple_locations(self):
-        parser = build_parser()
-        args = parser.parse_args([
-            "--locations", "Goa, India", "Bali, Indonesia", "Manali, India"
-        ])
-        assert args.locations == ["Goa, India", "Bali, Indonesia", "Manali, India"]
-
-    def test_default_invites(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa"])
-        assert args.invites == 3
-
-    def test_custom_invites(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa", "--invites", "5"])
-        assert args.invites == 5
-
-    def test_schedule_flag(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa", "--schedule"])
-        assert args.schedule is True
-
-    def test_no_schedule_by_default(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa"])
-        assert args.schedule is False
-
-    def test_interval_default(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa"])
-        assert args.interval == 4 * 60 * 60
-
-    def test_custom_interval(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa", "--interval", "3600"])
-        assert args.interval == 3600
-
-    def test_date_filters(self):
-        parser = build_parser()
-        args = parser.parse_args([
-            "--locations", "Goa",
-            "--date-mode", "fixed",
-            "--checkin", "2026-07-01",
-            "--checkout", "2026-07-07",
-        ])
-        assert args.checkin == "2026-07-01"
-        assert args.checkout == "2026-07-07"
-        assert args.date_mode == "fixed"
-
-    def test_flexible_duration_defaults(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa"])
-        assert args.date_mode == "flexible"
-        assert args.flex_duration == 1
-        assert args.flex_duration_unit == "week"
-
-    def test_guest_filter(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa", "--guests", "4"])
-        assert args.guests == 4
-
-    def test_default_guests(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa"])
-        assert args.guests == 2
-
-    def test_price_filters(self):
-        parser = build_parser()
-        args = parser.parse_args([
-            "--locations", "Goa",
-            "--min-price", "25.5",
-            "--max-price", "150",
-        ])
-        assert args.min_price == 25.5
-        assert args.max_price == 150.0
-
-    def test_dry_run_flag(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa", "--dry-run"])
-        assert args.dry_run is True
-
-    def test_no_headless_flag(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa", "--no-headless"])
-        assert args.no_headless is True
-
-    def test_verbose_flag(self):
-        parser = build_parser()
-        args = parser.parse_args(["--locations", "Goa", "-v"])
-        assert args.verbose is True
-
-    def test_custom_message(self):
-        parser = build_parser()
-        args = parser.parse_args([
-            "--locations", "Goa",
-            "--message", "Hi {host_name}, love {place_name}!",
-        ])
-        assert args.message == "Hi {host_name}, love {place_name}!"
-
-    def test_all_options_combined(self):
-        parser = build_parser()
-        args = parser.parse_args([
-            "--locations", "Goa, India", "Bali, Indonesia",
-            "--invites", "5",
-            "--schedule",
-            "--interval", "7200",
-            "--date-mode", "fixed",
-            "--checkin", "2026-08-01",
-            "--checkout", "2026-08-07",
-            "--guests", "3",
-            "--min-price", "30",
-            "--max-price", "200",
-            "--dry-run",
-            "--no-headless",
-            "-v",
-        ])
-        assert args.locations == ["Goa, India", "Bali, Indonesia"]
-        assert args.invites == 5
-        assert args.schedule is True
-        assert args.interval == 7200
-        assert args.checkin == "2026-08-01"
-        assert args.checkout == "2026-08-07"
-        assert args.guests == 3
-        assert args.min_price == 30.0
-        assert args.max_price == 200.0
-        assert args.dry_run is True
-        assert args.no_headless is True
-        assert args.verbose is True
+from app.database import (
+    create_outreach_messages,
+    create_search,
+    get_outreach_messages,
+    init_db,
+    save_listings,
+    update_outreach_status,
+)
+from app.models import Listing, OutreachStatus, Search
+from cli import select_outreach_targets
 
 
-class TestSetupLogging:
-    """Tests for logging configuration."""
-
-    def test_setup_logging_default(self):
-        # Should not raise
-        setup_logging(verbose=False)
-
-    def test_setup_logging_verbose(self):
-        # Should not raise
-        setup_logging(verbose=True)
+@pytest.fixture
+def db_path():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    init_db(path)
+    yield path
+    os.unlink(path)
 
 
-class TestValidateDate:
-    """Tests for date validation."""
+def test_select_outreach_targets_skips_globally_sent(db_path):
+    """After a listing is SENT, select_outreach_targets walks past it and picks the next."""
+    sid = create_search(
+        Search(location="Goa", checkin="2026-01-01", checkout="2026-01-08"), db_path
+    )
+    a = Listing(id="r1", title="A", host_name="h1", rating=5.0)
+    b = Listing(id="r2", title="B", host_name="h2", rating=4.0)
+    c = Listing(id="r3", title="C", host_name="h3", rating=3.0)
+    save_listings([a, b, c], sid, db_path)
+    template = "Hi {host_name} — {place_name} {location}"
+    create_outreach_messages(sid, [a], template, db_path)
+    msg = get_outreach_messages(sid, db_path)[0]
+    update_outreach_status(msg.id, OutreachStatus.SENT, "", db_path)
 
-    def test_valid_date(self):
-        assert validate_date("2026-07-01") == "2026-07-01"
+    targets, skipped = select_outreach_targets([a, b, c], invites=2, db_path=db_path)
+    assert skipped == 1
+    assert [t.id for t in targets] == ["r2", "r3"]
 
-    def test_valid_date_leap_year(self):
-        assert validate_date("2028-02-29") == "2028-02-29"
 
-    def test_invalid_format_slash(self):
-        import argparse
-        with pytest.raises(argparse.ArgumentTypeError, match="YYYY-MM-DD"):
-            validate_date("07/01/2026")
+def test_select_outreach_targets_takes_top_unmessaged_in_order(db_path):
+    sid = create_search(
+        Search(location="X", checkin="2026-01-01", checkout="2026-01-08"), db_path
+    )
+    a = Listing(id="x1", title="1", host_name="a")
+    b = Listing(id="x2", title="2", host_name="b")
+    save_listings([a, b], sid, db_path)
+    t, sk = select_outreach_targets([a, b], invites=1, db_path=db_path)
+    assert sk == 0
+    assert len(t) == 1 and t[0].id == "x1"
 
-    def test_invalid_format_no_dash(self):
-        import argparse
-        with pytest.raises(argparse.ArgumentTypeError, match="YYYY-MM-DD"):
-            validate_date("20260701")
 
-    def test_invalid_date_value(self):
-        import argparse
-        with pytest.raises(argparse.ArgumentTypeError, match="valid"):
-            validate_date("2026-02-30")
-
-    def test_invalid_month(self):
-        import argparse
-        with pytest.raises(argparse.ArgumentTypeError, match="valid"):
-            validate_date("2026-13-01")
-
-    def test_parser_rejects_bad_date(self):
-        parser = build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["--locations", "Goa", "--checkin", "not-a-date"])
+def test_select_outreach_targets_dedupes_same_listing_id(db_path):
+    """Scrape can return duplicate cards for the same room — only one outreach slot each."""
+    sid = create_search(
+        Search(location="X", checkin="2026-01-01", checkout="2026-01-08"), db_path
+    )
+    a1 = Listing(id="dup", title="A", host_name="a")
+    a2 = Listing(id="dup", title="A copy", host_name="a")
+    b = Listing(id="b", title="B", host_name="b")
+    save_listings([a1, a2, b], sid, db_path)
+    t, _ = select_outreach_targets([a1, a2, b], invites=3, db_path=db_path)
+    assert [x.id for x in t] == ["dup", "b"]

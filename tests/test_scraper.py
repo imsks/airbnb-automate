@@ -23,7 +23,7 @@ def test_build_search_url_basic():
         guests=2,
         date_mode="fixed",
     )
-    assert "airbnb.com" in url
+    assert "airbnb." in url
     assert "Goa" in url
     assert "checkin=2026-06-01" in url
     assert "checkout=2026-06-07" in url

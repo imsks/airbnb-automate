@@ -14,6 +14,7 @@ from app.database import (
     update_search_status,
     save_listings,
     get_listings,
+    has_sent_outreach_to_listing,
     create_outreach_messages,
     get_outreach_messages,
     update_outreach_status,
@@ -141,11 +142,42 @@ def test_duplicate_listings_ignored(db_path):
     sid = create_search(search, db_path)
 
     listing = Listing(id="123", title="Test Place", host_name="Host")
-    save_listings([listing], sid, db_path)
-    save_listings([listing], sid, db_path)  # Duplicate
+    assert save_listings([listing], sid, db_path) == 1
+    assert save_listings([listing], sid, db_path) == 0  # INSERT OR IGNORE
 
     retrieved = get_listings(sid, db_path)
     assert len(retrieved) == 1
+
+
+def test_get_listings_includes_rows_referenced_by_outreach_only(db_path):
+    """When the same Airbnb listing id was stored under another search, outreach
+    for a new search still resolves listing rows (INSERT OR IGNORE leaves the
+    old search_id on the row).
+    """
+    search1 = Search(location="First", checkin="2026-01-01", checkout="2026-01-07")
+    search2 = Search(location="Second", checkin="2026-01-01", checkout="2026-01-07")
+    sid1 = create_search(search1, db_path)
+    sid2 = create_search(search2, db_path)
+
+    listing = Listing(
+        id="room-999",
+        title="Cottage",
+        host_name="Jamie",
+        location="Second",
+        rating=4.2,
+    )
+    assert save_listings([listing], sid1, db_path) == 1
+    assert save_listings([listing], sid2, db_path) == 0  # row still has sid1
+
+    assert get_listings(sid2, db_path) == []
+
+    template = "Hi {host_name}, love {place_name} in {location}"
+    create_outreach_messages(sid2, [listing], template, db_path)
+
+    combined = get_listings(sid2, db_path)
+    assert len(combined) == 1
+    assert combined[0].id == "room-999"
+    assert combined[0].title == "Cottage"
 
 
 def test_search_with_optional_fields(db_path):
@@ -158,6 +190,38 @@ def test_search_with_optional_fields(db_path):
     assert retrieved.checkin == ""
     assert retrieved.min_price is None
     assert retrieved.max_price is None
+
+
+def test_has_sent_outreach_to_listing(db_path):
+    """After one message is SENT, we treat the listing as already contacted (any search)."""
+    search = Search(location="A", checkin="2026-01-01", checkout="2026-01-08")
+    sid = create_search(search, db_path)
+    listings = [Listing(id="L1", title="T", host_name="H")]
+    save_listings(listings, sid, db_path)
+    template = "Hi {host_name} - {place_name} in {location}"
+    create_outreach_messages(sid, listings, template, db_path)
+    assert has_sent_outreach_to_listing("L1", db_path) is False
+    msgs = get_outreach_messages(sid, db_path)
+    update_outreach_status(msgs[0].id, OutreachStatus.SENT, "", db_path)
+    assert has_sent_outreach_to_listing("L1", db_path) is True
+    assert has_sent_outreach_to_listing("", db_path) is False
+
+
+def test_create_outreach_skips_listing_globally_sent_in_other_search(db_path):
+    """Do not create a new PENDING row if we already SENT to that listing_id elsewhere."""
+    s1 = create_search(Search(location="A", checkin="2026-01-01", checkout="2026-01-08"), db_path)
+    s2 = create_search(Search(location="B", checkin="2026-01-01", checkout="2026-01-08"), db_path)
+    template = "Hi {host_name} - {place_name} in {location}"
+    l = Listing(id="shared-room", title="Cottage", host_name="Jo", location="A")
+    save_listings([l], s1, db_path)
+    create_outreach_messages(s1, [l], template, db_path)
+    m1 = get_outreach_messages(s1, db_path)
+    assert len(m1) == 1
+    update_outreach_status(m1[0].id, OutreachStatus.SENT, "", db_path)
+    save_listings([l], s2, db_path)
+    created2 = create_outreach_messages(s2, [l], template, db_path)
+    assert created2 == []
+    assert get_outreach_messages(s2, db_path) == []
 
 
 def test_create_outreach_messages(db_path):
