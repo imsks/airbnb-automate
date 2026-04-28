@@ -511,8 +511,8 @@ Examples:
     parser.add_argument(
         "--max-threads",
         type=int,
-        default=20,
-        help="Agent mode: max inbox threads to process (default: 20)",
+        default=5,
+        help="Agent mode: max inbox threads to fetch (default: 5)",
     )
 
     return parser
@@ -557,12 +557,20 @@ def main() -> None:
                     max_threads=args.max_threads,
                 )
                 if replies:
-                    print(f"\n📊 Generated {len(replies)} reply/replies:")
-                    for r in replies:
-                        print(f"\n── {r.get('host_name', '?')} ──")
-                        print(r.get("reply", "(empty)"))
+                    r = replies[0]
+                    host = r.get("host_name", "?")
+                    loc = r.get("location", "")
+                    reason = r.get("classify_reason", "")
+                    print(f"\n{'─'*60}")
+                    print(f"📨 Reply for {host}" + (f" ({loc})" if loc else ""))
+                    if reason:
+                        print(f"   Reason: {reason}")
+                    print(f"{'─'*60}")
+                    print(r.get("reply", "(empty)"))
+                    print(f"{'─'*60}")
+                    print(f"   Status: {r.get('status', 'review')}")
                 else:
-                    print("✅ No replies needed right now.")
+                    print("✅ No reply needed — all threads are either awaiting or not negotiable.")
 
         if args.agent in ("outreach", "both"):
             from app.agent.outreach_agent import generate_outreach_message

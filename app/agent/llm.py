@@ -32,7 +32,7 @@ def get_llm(
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore[import-untyped]
 
-        chosen_model = model or _get_env("GEMINI_MODEL", "gemini-2.0-flash")
+        chosen_model = model or _get_env("GEMINI_MODEL", "gemini-2.5-flash")
         return ChatGoogleGenerativeAI(
             model=chosen_model,
             temperature=temp,

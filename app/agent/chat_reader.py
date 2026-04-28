@@ -1,8 +1,9 @@
 """Read Airbnb inbox chats via Playwright browser automation.
 
-This module opens the Airbnb messaging inbox using the persisted browser
-session, scrapes conversation threads, and returns structured data that
-the negotiation agent can act on.
+Scrapes conversation threads from the Airbnb inbox using the persisted
+browser session.  Uses ``aria-label`` attributes and ``data-testid``
+selectors matching the actual Airbnb DOM structure (verified against
+real HTML snapshots in ``test/chat_list.html`` and ``test/chat.html``).
 """
 
 from __future__ import annotations
@@ -29,6 +30,11 @@ from app.config import get_airbnb_base_url
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class ChatMessage:
     """A single message in an Airbnb conversation."""
@@ -47,6 +53,8 @@ class ChatThread:
     listing_title: str = ""
     listing_url: str = ""
     messages: list[ChatMessage] = field(default_factory=list)
+    booking_status: str = ""
+    location: str = ""
 
     @property
     def last_message(self) -> Optional[ChatMessage]:
@@ -63,6 +71,11 @@ class ChatThread:
         return "\n\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def _airbnb_origin() -> str:
     return get_airbnb_base_url().rstrip("/")
 
@@ -71,109 +84,285 @@ async def _async_sleep_ms(ms: int) -> None:
     await asyncio.sleep(ms / 1000.0)
 
 
+# Regex helpers for parsing aria-label text on inbox items
+_CONV_WITH_RE = re.compile(
+    r"Conversation with (.+?)\.\s*Last message", re.IGNORECASE
+)
+_BOOKING_STATUS_RE = re.compile(
+    r"Booking status is ([^.]+)", re.IGNORECASE
+)
+_LOCATION_RE = re.compile(
+    r"\bin\s+([A-Z][\w\s\-]+?)\.?\s*$", re.IGNORECASE
+)
+
+# Regex helpers for parsing aria-label on message groups
+_ARIA_SENDER_RE = re.compile(
+    r"(?:(?:Yesterday|Today|Most Recent Message)\.\s*)?(\S+)\s+sent\s+",
+    re.IGNORECASE,
+)
+_ARIA_TIMESTAMP_RE = re.compile(
+    r"\.\s*Sent\s+((?:Yesterday|Today),?\s*\d{1,2}:\d{2}\s*[ap]m)",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
+# Inbox thread-list scraping
+# ---------------------------------------------------------------------------
+
+
 async def _get_inbox_threads(page: Page) -> list[dict]:
-    """Scrape the inbox sidebar to get thread metadata."""
+    """Scrape the inbox sidebar to get thread metadata.
+
+    Uses ``a[data-testid^="inbox_list_"]`` links and their accessible
+    ``<span>`` elements which contain structured conversation summaries
+    such as host name, last message, booking status, and location.
+    """
     threads: list[dict] = []
 
-    # Wait for inbox to load
-    await page.wait_for_selector(
-        '[data-testid="messaging-inbox-list-item"], '
-        '[class*="inbox"] a, '
-        '[role="listitem"]',
-        timeout=15000,
-    )
+    # ── Wait for the inbox container ──
+    logger.debug("Waiting for inbox container…")
+    try:
+        await page.wait_for_selector(
+            '[data-testid="inbox-container-marker"], '
+            '#list_inbox, '
+            'a[data-testid^="inbox_list_"]',
+            timeout=15000,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Inbox container not found with primary selectors: %s", exc
+        )
+        # Fallback: any list-based container
+        try:
+            await page.wait_for_selector(
+                '[role="group"][aria-label*="Conversations"], '
+                '[data-listroot="true"]',
+                timeout=10000,
+            )
+        except Exception:
+            logger.error("Could not locate inbox thread list at all")
+            return threads
+
     await _async_sleep_ms(2000)
 
-    # Get all thread items from the inbox sidebar
-    items = await page.query_selector_all(
-        '[data-testid="messaging-inbox-list-item"], '
-        '[class*="inbox"] a[href*="/messaging/thread/"], '
-        'a[href*="/messaging/thread/"]'
+    # ── Find thread links ──
+    items = await page.query_selector_all('a[data-testid^="inbox_list_"]')
+    logger.info(
+        "Found %d thread link(s) via a[data-testid^='inbox_list_']",
+        len(items),
     )
 
-    for item in items:
+    if not items:
+        # Fallback selector
+        items = await page.query_selector_all(
+            '[data-listrow="true"] a[data-item-index]'
+        )
+        logger.info(
+            "Fallback: found %d thread link(s) via [data-listrow] a",
+            len(items),
+        )
+
+    # ── Parse each thread item ──
+    for idx, item in enumerate(items):
         try:
-            href = await item.get_attribute("href") or ""
-            thread_id_match = re.search(r"/messaging/thread/(\d+)", href)
-            thread_id = thread_id_match.group(1) if thread_id_match else ""
+            # Thread ID from data-testid="inbox_list_{id}"
+            testid = (await item.get_attribute("data-testid")) or ""
+            thread_id = testid.replace("inbox_list_", "") if testid else ""
 
-            text_content = (await item.inner_text()).strip()
-            lines = [ln.strip() for ln in text_content.split("\n") if ln.strip()]
-            host_name = lines[0] if lines else "Host"
+            if not thread_id:
+                # Try the parent wrapper: <div id="inbox_list_{id}">
+                parent_id = await item.evaluate(
+                    "el => (el.closest('[id^=\"inbox_list_\"]') || {}).id || ''"
+                )
+                thread_id = parent_id.replace("inbox_list_", "")
 
-            threads.append({
+            # Accessible summary span (hidden but information-rich)
+            summary_span = await item.query_selector("span.a8jt5op")
+            full_text = ""
+            if summary_span:
+                full_text = (await summary_span.inner_text()).strip()
+            if not full_text:
+                full_text = (await item.get_attribute("aria-label")) or ""
+
+            logger.debug(
+                "  Thread link #%d: testid=%s summary=%.120s",
+                idx, testid, full_text,
+            )
+
+            # Host name
+            host_name = "Host"
+            hm = _CONV_WITH_RE.search(full_text)
+            if hm:
+                host_name = hm.group(1).strip()
+            else:
+                # Fallback: visible name element in the row
+                name_text = await item.evaluate(
+                    """el => {
+                        const row = el.closest('[data-listrow]') || el.parentElement;
+                        const nameEl = row && row.querySelector('.oj9ozqm');
+                        return nameEl ? nameEl.textContent.trim() : '';
+                    }"""
+                )
+                if name_text:
+                    host_name = name_text
+
+            # Booking status
+            booking_status = ""
+            bm = _BOOKING_STATUS_RE.search(full_text)
+            if bm:
+                booking_status = bm.group(1).strip()
+
+            # Location
+            location = ""
+            lm = _LOCATION_RE.search(full_text)
+            if lm:
+                location = lm.group(1).strip()
+
+            thread_data = {
                 "thread_id": thread_id,
                 "host_name": host_name,
-                "href": href,
-            })
+                "href": f"/messaging/thread/{thread_id}" if thread_id else "",
+                "booking_status": booking_status,
+                "location": location,
+                "summary": full_text[:200],
+            }
+            threads.append(thread_data)
+            logger.info(
+                "  📌 Thread #%d: id=%s host=%s status=%s location=%s",
+                idx + 1,
+                thread_id,
+                host_name,
+                booking_status or "(none)",
+                location or "(none)",
+            )
         except Exception as e:
-            logger.debug("Error reading inbox item: %s", e)
+            logger.warning("Error reading inbox item #%d: %s", idx, e)
             continue
 
     return threads
 
 
-async def _read_thread_messages(page: Page) -> list[ChatMessage]:
-    """Read messages from the currently open thread."""
+# ---------------------------------------------------------------------------
+# Thread message scraping
+# ---------------------------------------------------------------------------
+
+
+async def _read_thread_messages(
+    page: Page, host_name: str = ""
+) -> list[ChatMessage]:
+    """Read messages from the currently open thread.
+
+    Uses ``div[role="group"][data-item-id]`` message groups.  Sender is
+    identified by the presence of a host-profile button
+    (``data-testid="message-thread-profile-link"`` or
+    ``aria-label`` containing "Host").  Message text comes from the
+    ``.t12j2ntd`` content div; timestamps from ``.d1fakvie`` spans.
+    """
     messages: list[ChatMessage] = []
     await _async_sleep_ms(2000)
 
-    # Wait for messages to load
+    # ── Wait for message list ──
     try:
         await page.wait_for_selector(
-            '[data-testid="message-row"], '
-            '[class*="message"], '
-            '[class*="chat-message"]',
+            '[data-testid="message-list"], '
+            '[data-testid="message-thread-item-list-container"]',
             timeout=10000,
         )
     except Exception:
-        logger.debug("No message elements found in thread")
+        logger.warning("Message list container not found in thread")
         return messages
 
-    # Try to get message elements
-    msg_elements = await page.query_selector_all(
-        '[data-testid="message-row"], '
-        '[class*="MessageBody"], '
-        '[class*="message-content"]'
+    # ── Collect message groups (skip the "Start of Conversation" sentinel) ──
+    msg_groups = await page.query_selector_all(
+        'div[role="group"][data-item-id]:not([data-item-id="-1"])'
     )
+    logger.debug("Found %d message group(s) in thread", len(msg_groups))
 
-    for el in msg_elements:
+    for idx, group in enumerate(msg_groups):
         try:
-            text = (await el.inner_text()).strip()
+            item_id = (await group.get_attribute("data-item-id")) or ""
+            aria_label = (await group.get_attribute("aria-label")) or ""
+
+            # ── Determine sender ──
+            # Primary: host messages contain a profile-link button
+            host_btn = await group.query_selector(
+                'button[data-testid="message-thread-profile-link"], '
+                'button[aria-label*="Host"]'
+            )
+            is_host = host_btn is not None
+
+            # Secondary: cross-check sender name in aria-label
+            sender_name = ""
+            sm = _ARIA_SENDER_RE.search(aria_label)
+            if sm:
+                sender_name = sm.group(1)
+                if host_name and sender_name.lower() == host_name.lower():
+                    is_host = True
+
+            sender = "host" if is_host else "user"
+
+            # ── Message text ──
+            text = ""
+            text_el = await group.query_selector(".t12j2ntd")
+            if text_el:
+                text = (await text_el.inner_text()).strip()
+
             if not text:
+                # Fallback: message-content-wrapper
+                content_el = await group.query_selector(
+                    '[data-name="message-content-wrapper"]'
+                )
+                if content_el:
+                    text = (await content_el.inner_text()).strip()
+
+            if not text and sender_name and " sent " in aria_label:
+                # Last resort: extract from aria-label
+                marker = f"{sender_name} sent "
+                start = aria_label.find(marker)
+                if start >= 0:
+                    start += len(marker)
+                    end = aria_label.rfind(". Sent ")
+                    if end > start:
+                        text = aria_label[start:end].replace("..", "\n")
+
+            if not text:
+                logger.debug(
+                    "  Skipping message group #%d (item_id=%s): no text",
+                    idx, item_id,
+                )
                 continue
 
-            # Determine sender — Airbnb typically styles user messages differently
-            classes = (await el.get_attribute("class")) or ""
-            parent = await el.evaluate_handle("el => el.parentElement")
-            parent_classes = (await parent.evaluate("el => el.className || ''")) or ""
-
-            # Heuristic: user messages are often right-aligned or have specific classes
-            is_user = any(
-                kw in (classes + " " + parent_classes).lower()
-                for kw in ("outgoing", "sent", "self", "right", "you")
-            )
-
-            # Try to get timestamp
-            time_el = await el.query_selector("time, [datetime], [class*='time']")
+            # ── Timestamp ──
             timestamp = ""
-            if time_el:
-                timestamp = (await time_el.get_attribute("datetime")) or (
-                    await time_el.inner_text()
-                ).strip()
+            tm = _ARIA_TIMESTAMP_RE.search(aria_label)
+            if tm:
+                timestamp = tm.group(1).strip()
+            else:
+                time_el = await group.query_selector("span.d1fakvie")
+                if time_el:
+                    timestamp = (await time_el.inner_text()).strip()
 
             messages.append(
-                ChatMessage(
-                    sender="user" if is_user else "host",
-                    text=text,
-                    timestamp=timestamp,
-                )
+                ChatMessage(sender=sender, text=text, timestamp=timestamp)
+            )
+            logger.debug(
+                "  💬 Message #%d: sender=%s ts=%s text=%.80s…",
+                idx + 1,
+                sender,
+                timestamp or "(none)",
+                text,
             )
         except Exception as e:
-            logger.debug("Error reading message: %s", e)
+            logger.warning("Error reading message group #%d: %s", idx, e)
             continue
 
     return messages
+
+
+# ---------------------------------------------------------------------------
+# Main fetch flow
+# ---------------------------------------------------------------------------
 
 
 async def fetch_inbox_chats(
@@ -197,51 +386,94 @@ async def fetch_inbox_chats(
             # Navigate to inbox
             inbox_url = f"{_airbnb_origin()}/hosting/inbox"
             logger.info("Opening Airbnb inbox: %s", inbox_url)
-            await page.goto(inbox_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(
+                inbox_url, wait_until="domcontentloaded", timeout=30000
+            )
             await _async_sleep_ms(3000)
 
-            # If redirected to guest inbox, try that URL
-            if "/hosting/inbox" not in page.url:
+            # Check we landed on an inbox page — /hosting/inbox often
+            # redirects to /hosting/messages/{thread_id} which still
+            # renders the sidebar thread list we need.
+            current_url = page.url
+            logger.info("Current URL after navigation: %s", current_url)
+
+            if (
+                "/hosting/inbox" not in current_url
+                and "/hosting/messages" not in current_url
+                and "/messaging" not in current_url
+            ):
                 guest_inbox = f"{_airbnb_origin()}/messaging"
-                await page.goto(guest_inbox, wait_until="domcontentloaded", timeout=30000)
+                logger.info(
+                    "Redirected away from inbox — trying guest inbox: %s",
+                    guest_inbox,
+                )
+                await page.goto(
+                    guest_inbox,
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
                 await _async_sleep_ms(3000)
+                logger.info("Current URL: %s", page.url)
 
-            # Get thread list from sidebar
+            # ── Scrape thread list ──
             thread_meta = await _get_inbox_threads(page)
-            logger.info("Found %d threads in inbox", len(thread_meta))
+            logger.info("Found %d thread(s) in inbox", len(thread_meta))
 
-            for meta in thread_meta[:max_threads]:
+            # ── Open each thread and read messages ──
+            for i, meta in enumerate(thread_meta[:max_threads]):
+                thread_id = meta.get("thread_id", "")
+                host_name = meta.get("host_name", "Host")
+
+                if not thread_id:
+                    logger.warning(
+                        "Skipping thread #%d: missing thread_id", i
+                    )
+                    continue
+
                 try:
-                    # Click on the thread to open it
-                    thread_url = meta.get("href", "")
-                    if thread_url:
-                        full_url = (
-                            thread_url
-                            if thread_url.startswith("http")
-                            else f"{_airbnb_origin()}{thread_url}"
-                        )
-                        await page.goto(
-                            full_url,
-                            wait_until="domcontentloaded",
-                            timeout=15000,
-                        )
-                        await _async_sleep_ms(2000)
+                    thread_url = (
+                        f"{_airbnb_origin()}/messaging/thread/{thread_id}"
+                    )
+                    logger.info(
+                        "Opening thread %s (%s): %s",
+                        thread_id,
+                        host_name,
+                        thread_url,
+                    )
+                    await page.goto(
+                        thread_url,
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    await _async_sleep_ms(2000)
 
-                    messages = await _read_thread_messages(page)
+                    messages = await _read_thread_messages(
+                        page, host_name=host_name
+                    )
 
                     thread = ChatThread(
-                        thread_id=meta.get("thread_id", ""),
-                        host_name=meta.get("host_name", "Host"),
+                        thread_id=thread_id,
+                        host_name=host_name,
                         messages=messages,
+                        booking_status=meta.get("booking_status", ""),
+                        location=meta.get("location", ""),
                     )
                     threads.append(thread)
                     logger.info(
-                        "Read thread with %s: %d messages",
-                        thread.host_name,
+                        "✅ Thread %s (%s): %d message(s) | status=%s | location=%s",
+                        thread_id,
+                        host_name,
                         len(messages),
+                        thread.booking_status or "(none)",
+                        thread.location or "(none)",
                     )
                 except Exception as e:
-                    logger.warning("Error reading thread %s: %s", meta.get("thread_id"), e)
+                    logger.warning(
+                        "Error reading thread %s (%s): %s",
+                        thread_id,
+                        host_name,
+                        e,
+                    )
                     continue
 
         except Exception as e:
@@ -261,4 +493,6 @@ def fetch_inbox_chats_sync(
     *, max_threads: int = 20, headless: bool = True
 ) -> list[ChatThread]:
     """Synchronous wrapper for :func:`fetch_inbox_chats`."""
-    return asyncio.run(fetch_inbox_chats(max_threads=max_threads, headless=headless))
+    return asyncio.run(
+        fetch_inbox_chats(max_threads=max_threads, headless=headless)
+    )

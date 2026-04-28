@@ -1,6 +1,6 @@
 # 🏠 Airbnb Automate
 
-A simple app to search Airbnb listings by location, store results in a database, and **automatically outreach to hosts** with personalized messages — all from a clean web UI.
+A tool to search Airbnb listings, **automatically outreach to hosts**, and **negotiate stays via an AI agent** — all from a CLI or web UI.
 
 ## 🚀 Quick Start
 
@@ -17,11 +17,11 @@ playwright install chrome
 
 Set `PLAYWRIGHT_CHANNEL=chrome` in `.env` when using the Chrome channel.
 
-### 2. Configure (Optional)
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env if you want to change port, database path, or message template
+# Edit .env — at minimum set GOOGLE_API_KEY for the negotiate agent
 ```
 
 ### 3. Run — Web UI
@@ -31,7 +31,7 @@ python run.py
 # Open http://localhost:5000
 ```
 
-### 4. Run — CLI (Autopilot Mode) 🤖
+### 4. Run — CLI (Outreach Autopilot) 🤖
 
 For a fully hands-off experience, use the CLI script. It scrapes listings and sends outreach invites automatically.
 
@@ -69,6 +69,57 @@ python cli.py --locations "Goa, India" --dry-run
 python cli.py --locations "Goa, India" --no-headless
 ```
 
+### 5. Run — Negotiate Agent 🤖💬
+
+The negotiate agent reads your Airbnb inbox, identifies threads worth replying to, and drafts a negotiation message — all via a single CLI command.
+
+```bash
+# Basic run — fetches 5 threads, picks the best one, generates a reply
+python cli.py --agent negotiate
+
+# Verbose logging — see pre-filter decisions and LLM classifications
+python cli.py --agent negotiate -v
+
+# Fetch more threads (default: 5)
+python cli.py --agent negotiate --max-threads 10
+
+# Show the browser while it reads the inbox
+python cli.py --agent negotiate --no-headless
+```
+
+python cli.py --agent negotiate                          # single cycle, review mode
+python cli.py --agent negotiate --agent-schedule         # loop every 5h
+python cli.py --agent negotiate --auto-send              # send without review
+python cli.py --agent outreach --locations "Goa, India"  # AI-generated first messages
+python cli.py --agent both --locations "Goa, India"      # negotiate + outreach
+python cli.py --agent both --schedule
+
+**How it works (single-thread focused flow):**
+
+1. **Fetch** — Opens your Airbnb inbox and scrapes the first N threads (messages, host name, booking status, location).
+2. **Pre-filter** — Locally skips threads that don't need a reply:
+   - Last message is from you → you're already awaiting a host reply
+   - Booking status is dead (`invite expired`, `dates not available`, `declined`, `cancelled`, `withdrawn`)
+   - Empty conversation
+3. **Classify (LLM)** — For surviving candidates, the AI decides: is there a real **chance** to negotiate, or is it a straight **no**?
+4. **Pick one** — Selects the single best thread (freshest conversation).
+5. **Generate reply** — Crafts a negotiation message tailored to the conversation context.
+6. **Present** — Prints the reply for your review.
+
+> The agent requires a valid Airbnb login session (same persistent browser profile as outreach). Log in once via the web UI or CDP before running.
+
+**Example output:**
+```
+📥 Fetching first 5 inbox thread(s)…
+🔎 Pre-filtering 5 thread(s)…
+   ⏭️  Shaivy (#123): SKIP — awaiting host reply
+   ⏭️  Ritu (#456):   SKIP — dead status 'dates are not available'
+   ✅ Kumar (#789):   candidate (last_sender=host, status='invited to book')
+🔍 Classifying 1 candidate(s) with LLM…
+   ❌ Kumar → NO CHANCE: Host said "only paid reservations"
+✅ No reply needed — all threads are either awaiting or not negotiable.
+```
+
 **Important:** You must log in to Airbnb **once** before using the CLI for outreach. Either:
 - Use the web UI (`python run.py` → click "🔐 Login to Airbnb"), or
 - Start Chrome with `--remote-debugging-port` and set `CHROME_CDP_URL` in `.env` (see `.env.example`)
@@ -97,6 +148,10 @@ The CLI reuses the same persistent browser profile as the web UI.
 | `--dry-run` | Scrape only, skip outreach | off |
 | `--no-headless` | Show the browser (default is headless) | off |
 | `-v, --verbose` | Debug logging | off |
+| **Agent mode** | | |
+| `--agent negotiate` | Run the AI negotiation agent instead of outreach | — |
+| `--max-threads` | Max inbox threads for the agent to fetch | 5 |
+| `--auto-send` | Auto-send the generated reply (not yet wired) | off |
 
 That's it! The landing page lets you enter a location and optional preferences (dates, guests, price range). Hit search, and the app scrapes Airbnb and shows you the results.
 
@@ -131,7 +186,7 @@ The default message introduces you as a content creator offering to create conte
 airbnb-automate/
 ├── locations.md            # Optional: one location per line (CLI + UI hints)
 ├── run.py                  # Entry point — web UI
-├── cli.py                  # Entry point — CLI with scheduler (autopilot)
+├── cli.py                  # Entry point — CLI with scheduler + agent mode
 ├── requirements.txt        # Python dependencies
 ├── .env.example            # Environment variables template
 │
@@ -142,7 +197,13 @@ airbnb-automate/
 │   ├── browser_session.py  # Shared Playwright session (search + login + outreach)
 │   ├── locations_md.py     # Read locations.md (one place per line)
 │   ├── scraper.py          # Airbnb scraper (Playwright)
-│   └── outreach.py         # Host outreach automation (Playwright)
+│   ├── outreach.py         # Host outreach automation (Playwright)
+│   │
+│   └── agent/              # AI negotiation agent
+│       ├── llm.py          # LLM provider abstraction (Gemini / OpenAI / Perplexity)
+│       ├── prompts.py      # System + human prompt templates
+│       ├── chat_reader.py  # Scrape inbox threads & messages via Playwright
+│       └── negotiator.py   # LangGraph workflow (fetch → filter → classify → reply)
 │
 ├── web/                    # Flask web app
 │   ├── app.py              # Routes (home, search, results, outreach)
@@ -152,6 +213,11 @@ airbnb-automate/
 │       ├── home.html
 │       ├── results.html
 │       └── outreach.html
+│
+├── data/                   # Runtime data (gitignored)
+│   ├── airbnb_automate.db  # SQLite database
+│   ├── browser_state.json  # Cookie backup
+│   └── airbnb_browser_profile/  # Persistent Chrome profile
 │
 └── tests/                  # Test suite
     ├── test_database.py
@@ -198,6 +264,16 @@ Tune with `OUTREACH_MAX_SENDS_PER_WINDOW`, `OUTREACH_RATE_WINDOW_SECONDS`, and `
 | `OUTREACH_MAX_SENDS_PER_WINDOW` | Max successful messages per sliding window (global) | `5` |
 | `OUTREACH_RATE_WINDOW_SECONDS` | Sliding window length in seconds | `10800` (3h) |
 | `OUTREACH_INTER_MESSAGE_DELAY_SECONDS` | Minimum pause between each send attempt | `120` |
+| **Agent / LLM** | | |
+| `LLM_PROVIDER` | LLM provider: `gemini`, `openai`, or `perplexity` | `gemini` |
+| `LLM_TEMPERATURE` | LLM temperature | `0.7` |
+| `GOOGLE_API_KEY` | Google Gemini API key (required for `gemini` provider) | — |
+| `GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` |
+| `OPENAI_API_KEY` | OpenAI API key (for `openai` provider) | — |
+| `OPENAI_MODEL` | OpenAI model name | `gpt-4o-mini` |
+| `PERPLEXITY_API_KEY` | Perplexity API key (for `perplexity` provider) | — |
+| `PERPLEXITY_MODEL` | Perplexity model name | `sonar-pro` |
+| `AGENT_SCHEDULE_HOURS` | How often the negotiation agent runs in scheduled mode | `5` |
 
 ## 🧪 Testing
 

@@ -89,20 +89,25 @@ Generate the initial outreach message.\
 # ---------------------------------------------------------------------------
 
 CLASSIFIER_SYSTEM = """\
-You are a conversation analyst.  Given an Airbnb chat thread, decide whether
-the **user** (not the host) needs to send a reply.
+You are a conversation analyst for an Airbnb negotiation bot.
+
+Given a chat thread between a user (content creator seeking a free/discounted
+stay) and a host, decide whether there is a **real chance** to negotiate.
 
 Output a JSON object with two keys:
 - "needs_reply": true or false
 - "reason": a one-sentence explanation
 
-Rules:
-- If the last message is FROM the host and it asks a question, makes an offer,
-  or continues the conversation → needs_reply = true.
-- If the last message is FROM the user → needs_reply = false (already replied).
-- If the conversation is stale (>7 days since last host message with no
-  response) → needs_reply = true (follow-up needed).
-- If the host declined and the user already acknowledged → needs_reply = false.
+**Reply = true** when:
+- The host seems open to collaboration, asks questions, or proposes terms.
+- The host invited to book or asked for more details — this is a buying signal.
+- The host made a counter-offer or is discussing dates/pricing.
+
+**Reply = false** when:
+- The host gave a flat refusal ("only paid reservations", "no discounts", etc.).
+- The host hasn't responded yet and the last message is from the user.
+- The conversation is clearly over (host declined, user acknowledged).
+- The host's reply is purely an automated/system message with no engagement.
 
 Output ONLY valid JSON.  No markdown fences.\
 """
