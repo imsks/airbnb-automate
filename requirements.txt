@@ -6,3 +6,9 @@ jinja2==3.1.6
 
 # Data handling
 pydantic==2.11.3
+
+# Agent / LLM dependencies
+langgraph==0.4.1
+langchain-core==0.3.81
+langchain-openai==0.3.18
+langchain-google-genai==2.1.4

@@ -486,6 +486,35 @@ Examples:
         help="Enable debug logging",
     )
 
+    # ── Agent sub-commands ──
+    parser.add_argument(
+        "--agent",
+        choices=["negotiate", "outreach", "both"],
+        default=None,
+        help=(
+            "Run the AI agent instead of the hardcoded flow. "
+            "'negotiate' = monitor inbox & generate replies, "
+            "'outreach' = generate AI-crafted initial messages, "
+            "'both' = run negotiate then outreach"
+        ),
+    )
+    parser.add_argument(
+        "--agent-schedule",
+        action="store_true",
+        help="Run the agent on a recurring loop (default every 5 h, see AGENT_SCHEDULE_HOURS)",
+    )
+    parser.add_argument(
+        "--auto-send",
+        action="store_true",
+        help="Agent mode: automatically send generated replies (default: review only)",
+    )
+    parser.add_argument(
+        "--max-threads",
+        type=int,
+        default=20,
+        help="Agent mode: max inbox threads to process (default: 20)",
+    )
+
     return parser
 
 
@@ -493,7 +522,6 @@ def main() -> None:
     """CLI entry point."""
     parser = build_parser()
     args = parser.parse_args()
-    resolved_locations = resolve_locations(parser, args)
 
     setup_logging(verbose=args.verbose)
 
@@ -503,6 +531,67 @@ def main() -> None:
 
     print("🔧 Initializing database...")
     init_db()
+
+    # ── Agent mode ────────────────────────────────────────────────────────
+    if args.agent:
+        headless = not args.no_headless
+
+        if args.agent in ("negotiate", "both"):
+            if args.agent_schedule:
+                from app.agent.scheduler import run_agent_loop
+
+                print("🤖 Starting negotiation agent loop…")
+                run_agent_loop(
+                    headless=headless,
+                    auto_send=args.auto_send,
+                    max_threads=args.max_threads,
+                )
+                return
+            else:
+                from app.agent.negotiator import run_negotiation
+
+                print("🤖 Running negotiation agent (single cycle)…")
+                replies = run_negotiation(
+                    headless=headless,
+                    auto_send=args.auto_send,
+                    max_threads=args.max_threads,
+                )
+                if replies:
+                    print(f"\n📊 Generated {len(replies)} reply/replies:")
+                    for r in replies:
+                        print(f"\n── {r.get('host_name', '?')} ──")
+                        print(r.get("reply", "(empty)"))
+                else:
+                    print("✅ No replies needed right now.")
+
+        if args.agent in ("outreach", "both"):
+            from app.agent.outreach_agent import generate_outreach_message
+
+            resolved_locations = resolve_locations(parser, args)
+            print("🤖 Running AI outreach agent…")
+            for location in resolved_locations:
+                print(f"\n📍 Generating AI outreach for '{location}'…")
+                try:
+                    from app.scraper import scrape_listings_sync
+
+                    listings = scrape_listings_sync(
+                        location=location,
+                        guests=args.guests,
+                        max_listings=args.invites,
+                        headless=headless,
+                    )
+                    for lst in listings[:args.invites]:
+                        msg = generate_outreach_message(lst)
+                        host = lst.host_name or "Host"
+                        print(f"\n── {host} ({lst.title}) ──")
+                        print(msg)
+                except Exception as e:
+                    print(f"   ❌ Failed: {e}")
+
+        return
+
+    # ── Classic mode (unchanged) ──────────────────────────────────────────
+    resolved_locations = resolve_locations(parser, args)
 
     # CLI defaults to headless; use --no-headless only when debugging.
     headless = not args.no_headless
