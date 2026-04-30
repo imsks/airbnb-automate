@@ -574,27 +574,112 @@ def main() -> None:
 
         if args.agent in ("outreach", "both"):
             from app.agent.outreach_agent import generate_outreach_message
+            from app.database import create_outreach_message_direct
 
             resolved_locations = resolve_locations(parser, args)
-            print("🤖 Running AI outreach agent…")
-            for location in resolved_locations:
-                print(f"\n📍 Generating AI outreach for '{location}'…")
-                try:
-                    from app.scraper import scrape_listings_sync
 
-                    listings = scrape_listings_sync(
-                        location=location,
-                        guests=args.guests,
-                        max_listings=args.invites,
-                        headless=headless,
+            def _run_agent_outreach_cycle() -> list[dict]:
+                """One full agent-outreach cycle: scrape → generate AI messages → send."""
+                cycle_results = []
+                for location in resolved_locations:
+                    if _shutdown:
+                        print("⏹️  Shutdown requested — skipping remaining locations.")
+                        break
+                    print(f"\n📍 AI outreach for '{location}'…")
+                    try:
+                        from app.scraper import scrape_listings_sync
+
+                        # 1. Create search record
+                        search = Search(
+                            location=location,
+                            checkin="",
+                            checkout="",
+                            guests=args.guests,
+                            date_mode="flexible",
+                        )
+                        search_id = create_search(search)
+
+                        # 2. Scrape
+                        listings = scrape_listings_sync(
+                            location=location,
+                            guests=args.guests,
+                            max_listings=args.invites * 3,
+                            headless=headless,
+                        )
+                        if not listings:
+                            update_search_status(search_id, SearchStatus.COMPLETED, 0)
+                            print(f"   ⚠️  No listings found for '{location}'")
+                            cycle_results.append({"location": location, "sent": 0, "failed": 0})
+                            continue
+
+                        saved = save_listings(listings, search_id)
+                        update_search_status(search_id, SearchStatus.COMPLETED, len(listings))
+                        print(f"   ✅ {len(listings)} listings scraped ({saved} new rows saved)")
+
+                        # 3. Select targets (skip already-sent)
+                        targets, skipped_prior = select_outreach_targets(listings, args.invites)
+                        if skipped_prior:
+                            print(f"   ⏭️  Skipped {skipped_prior} — already contacted")
+                        if not targets:
+                            print("   ⚠️  No new hosts to message.")
+                            cycle_results.append({"location": location, "sent": 0, "failed": 0})
+                            continue
+
+                        # 4. Generate AI messages & create outreach records
+                        for lst in targets:
+                            msg = generate_outreach_message(lst)
+                            host = lst.host_name or "Host"
+                            print(f"\n── {host} ({lst.title}) ──")
+                            print(msg)
+                            create_outreach_message_direct(search_id, lst, msg)
+
+                        # 5. Send via browser (serial, one at a time)
+                        print(f"\n📤 Sending {len(targets)} message(s) via browser…")
+                        summary = run_outreach_sync(search_id)
+                        print(
+                            f"   📊 Sent: {summary.get('sent', 0)} | "
+                            f"Failed: {summary.get('failed', 0)} | "
+                            f"Skipped: {summary.get('skipped', 0)}"
+                        )
+                        cycle_results.append({"location": location, **summary})
+
+                        if summary.get("airbnb_rate_limited"):
+                            print("   🛑 Airbnb rate limit hit — stopping.")
+                            break
+
+                    except Exception as e:
+                        print(f"   ❌ Failed: {e}")
+                        logger.exception("Agent outreach failed for '%s'", location)
+                        cycle_results.append({"location": location, "sent": 0, "failed": 1, "error": str(e)})
+                return cycle_results
+
+            if args.agent_schedule or args.schedule:
+                interval = args.interval
+                hours = interval / 3600
+                print(f"\n⏰ Agent outreach scheduler — every {hours:.1f} hours")
+                print("   Press Ctrl+C to stop\n")
+                cycle_count = 0
+                while not _shutdown:
+                    cycle_count += 1
+                    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    print(f"\n🔄 Cycle #{cycle_count} at {now}")
+                    _run_agent_outreach_cycle()
+                    if _shutdown:
+                        break
+                    next_run = datetime.now(timezone.utc).timestamp() + interval
+                    next_str = datetime.fromtimestamp(next_run, tz=timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S UTC"
                     )
-                    for lst in listings[:args.invites]:
-                        msg = generate_outreach_message(lst)
-                        host = lst.host_name or "Host"
-                        print(f"\n── {host} ({lst.title}) ──")
-                        print(msg)
-                except Exception as e:
-                    print(f"   ❌ Failed: {e}")
+                    print(f"\n😴 Next cycle at {next_str} ({hours:.1f}h)…")
+                    elapsed = 0
+                    while elapsed < interval and not _shutdown:
+                        chunk = min(30, interval - elapsed)
+                        time.sleep(chunk)
+                        elapsed += chunk
+                print("\n👋 Scheduler stopped.")
+            else:
+                print("🤖 Running AI outreach agent (single cycle)…")
+                _run_agent_outreach_cycle()
 
         return
 

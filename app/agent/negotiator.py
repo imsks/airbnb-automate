@@ -31,6 +31,7 @@ from app.agent.prompts import (
     NEGOTIATION_HUMAN,
     NEGOTIATION_SYSTEM,
 )
+from app.database import dismiss_thread, get_dismissed_thread_ids
 
 logger = logging.getLogger(__name__)
 
@@ -125,14 +126,16 @@ def pre_filter_node(state: NegotiationState) -> dict[str, Any]:
     """Skip threads we can rule out without an LLM call.
 
     Skip when:
+      - thread was previously dismissed (already decided not to negotiate)
       - last message is from user (we're already awaiting a host reply)
       - booking status is dead (expired, unavailable, declined, etc.)
       - conversation is empty
     """
     threads = state.get("threads", [])
     candidates: list[dict] = []
+    dismissed_ids = get_dismissed_thread_ids()
 
-    logger.info("🔎 Pre-filtering %d thread(s)…", len(threads))
+    logger.info("🔎 Pre-filtering %d thread(s) (%d previously dismissed)…", len(threads), len(dismissed_ids))
 
     for t in threads:
         host = t.get("host_name", "?")
@@ -141,9 +144,15 @@ def pre_filter_node(state: NegotiationState) -> dict[str, Any]:
         msgs = t.get("messages", [])
         conv = t.get("conversation_text", "")
 
+        # Skip: previously dismissed
+        if tid in dismissed_ids:
+            logger.info("   ⏭️  %s (#%s): SKIP — previously dismissed", host, tid)
+            continue
+
         # Skip: empty conversation
         if not conv or not msgs:
             logger.info("   ⏭️  %s (#%s): SKIP — empty conversation", host, tid)
+            dismiss_thread(tid, host, "empty conversation")
             continue
 
         # Skip: last message is from user → we're awaiting host reply
@@ -155,6 +164,7 @@ def pre_filter_node(state: NegotiationState) -> dict[str, Any]:
         # Skip: dead booking status
         if status in _DEAD_STATUSES:
             logger.info("   ⏭️  %s (#%s): SKIP — dead status '%s'", host, tid, status)
+            dismiss_thread(tid, host, f"dead booking status: {status}")
             continue
 
         logger.info("   ✅ %s (#%s): candidate (last_sender=host, status='%s')", host, tid, status)
@@ -213,6 +223,11 @@ def classify_node(state: NegotiationState) -> dict[str, Any]:
             logger.info("   ✅ %s → CHANCE: %s", host, reason)
         else:
             logger.info("   ❌ %s → NO CHANCE: %s", host, reason)
+            dismiss_thread(
+                t.get("thread_id", ""),
+                host,
+                f"LLM classified as no chance: {reason}",
+            )
 
     logger.info("   %d / %d candidate(s) worth replying to", len(worth_replying), len(candidates))
     return {"candidates": worth_replying}

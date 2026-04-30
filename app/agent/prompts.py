@@ -57,8 +57,9 @@ to a free or heavily discounted stay in exchange for social-media exposure.
 Writing guidelines:
 1. Open with a genuine compliment about the specific property (use the title,
    amenities, location, or photos you know about).
-2. Briefly introduce yourself: remote software engineer, founder of
-   The Boring Education, ~150 k+ combined social-media followers.
+2. Briefly introduce yourself: your name is **Sachin Kumar Shukla**, a remote
+   software engineer and the founder of The Boring Education, with ~150 k+
+   combined social-media followers.
 3. Clearly state the value proposition: organic content (photos, reels, honest
    review) that showcases the property and drives future bookings.
 4. Keep it short (100–160 words), friendly, and easy to say "yes" to.

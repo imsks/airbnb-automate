@@ -129,6 +129,13 @@ def init_db(db_path: Optional[str] = None) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sent_at REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS dismissed_threads (
+                thread_id TEXT PRIMARY KEY,
+                host_name TEXT DEFAULT '',
+                reason TEXT DEFAULT '',
+                dismissed_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         _migrate_searches_flexible_columns(conn)
         _migrate_listings_search_id(conn)
@@ -437,6 +444,100 @@ def create_outreach_messages(
             )
         conn.commit()
         return messages
+    finally:
+        conn.close()
+
+
+def create_outreach_message_direct(
+    search_id: int,
+    listing: Listing,
+    message: str,
+    db_path: Optional[str] = None,
+) -> Optional[int]:
+    """Create a single outreach message with a pre-generated message (e.g. from AI agent).
+
+    Returns the row id if created, or None if skipped (already exists / already sent).
+    """
+    conn = get_connection(db_path)
+    try:
+        host = listing.host_name or "Host"
+        place = listing.title or "your place"
+        location = listing.location or "your area"
+
+        existing = conn.execute(
+            "SELECT id FROM outreach_messages WHERE search_id = ? AND listing_id = ?",
+            (search_id, listing.id),
+        ).fetchone()
+        if existing:
+            return existing["id"]
+
+        if has_sent_outreach_to_listing(listing.id, db_path):
+            return None
+
+        cursor = conn.execute(
+            """INSERT INTO outreach_messages
+               (search_id, listing_id, host_name, place_name, location, message, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                search_id,
+                listing.id,
+                host,
+                place,
+                location,
+                message,
+                OutreachStatus.PENDING.value,
+            ),
+        )
+        conn.commit()
+        return cursor.lastrowid
+    finally:
+        conn.close()
+
+
+# --- Dismissed Threads (Negotiation) ---
+
+
+def dismiss_thread(
+    thread_id: str,
+    host_name: str = "",
+    reason: str = "",
+    db_path: Optional[str] = None,
+) -> None:
+    """Mark a chat thread as dismissed so the negotiation agent skips it in future runs."""
+    if not (thread_id or "").strip():
+        return
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO dismissed_threads (thread_id, host_name, reason) VALUES (?, ?, ?)",
+            (thread_id.strip(), host_name, reason),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def is_thread_dismissed(thread_id: str, db_path: Optional[str] = None) -> bool:
+    """Return True if a thread was previously dismissed."""
+    if not (thread_id or "").strip():
+        return False
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM dismissed_threads WHERE thread_id = ? LIMIT 1",
+            (thread_id.strip(),),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def get_dismissed_thread_ids(db_path: Optional[str] = None) -> set[str]:
+    """Return all dismissed thread IDs as a set for fast lookup."""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute("SELECT thread_id FROM dismissed_threads").fetchall()
+        return {r["thread_id"] for r in rows}
     finally:
         conn.close()
 
