@@ -27,9 +27,12 @@ cp .env.example .env
 ### 3. Run — Web UI
 
 ```bash
-python run.py
-# Open http://localhost:5000
+make up     # start in the background
+# Open http://localhost:5000  (or FLASK_PORT from .env)
+make down   # stop
 ```
+
+`make up` uses `.venv` or `venv` when present. Same as `python run.py`, just start/stop from the terminal.
 
 ### 4. Run — CLI (Outreach Autopilot) 🤖
 
@@ -184,6 +187,7 @@ The default message introduces you as a content creator offering to create conte
 
 ```
 airbnb-automate/
+├── Makefile                # make up / make down — start or stop the web UI
 ├── locations.md            # Optional: one location per line (CLI + UI hints)
 ├── run.py                  # Entry point — web UI
 ├── cli.py                  # Entry point — CLI with scheduler + agent mode
@@ -198,6 +202,7 @@ airbnb-automate/
 │   ├── locations_md.py     # Read locations.md (one place per line)
 │   ├── scraper.py          # Airbnb scraper (Playwright)
 │   ├── outreach.py         # Host outreach automation (Playwright)
+│   ├── devctl.py           # Background start/stop for `make up` / `make down`
 │   │
 │   └── agent/              # AI negotiation agent
 │       ├── llm.py          # LLM provider abstraction (Gemini / OpenAI / Perplexity)
@@ -217,6 +222,7 @@ airbnb-automate/
 ├── data/                   # Runtime data (gitignored)
 │   ├── airbnb_automate.db  # SQLite database
 │   ├── browser_state.json  # Cookie backup
+│   ├── web.pid / web.log   # PID + log from `make up`
 │   └── airbnb_browser_profile/  # Persistent Chrome profile
 │
 └── tests/                  # Test suite
