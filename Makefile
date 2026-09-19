@@ -1,14 +1,15 @@
 PYTHON := $(firstword $(wildcard .venv/bin/python venv/bin/python) python3)
 
-.PHONY: up down api worker tick brief status freeze resume test
+.PHONY: login session api worker tick brief status itinerary sync freeze resume test
 
-up:
-	@$(PYTHON) -m app.devctl up
+# Sign in to Airbnb by hand, once. The worker cannot do this for you.
+login:
+	@$(PYTHON) manage.py login
 
-down:
-	@$(PYTHON) -m app.devctl down
+session:
+	@$(PYTHON) manage.py session
 
-# v2: the API and the worker are separate processes. Only the worker
+# The API and the worker are separate processes. Only the worker
 # touches the browser, so run it where you are logged in to Airbnb.
 api:
 	@$(PYTHON) manage.py api --reload
@@ -24,6 +25,12 @@ brief:
 
 status:
 	@$(PYTHON) manage.py status
+
+itinerary:
+	@$(PYTHON) manage.py itinerary
+
+sync:
+	@$(PYTHON) manage.py sync
 
 freeze:
 	@$(PYTHON) manage.py freeze --reason "manual"

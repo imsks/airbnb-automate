@@ -1,67 +1,29 @@
-"""Tests for the agent package — LLM abstraction, prompts, graphs, and helpers."""
+"""Tests for the agent package — LLM abstraction, chat reader, v2 prompts."""
 
 from __future__ import annotations
 
-import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
-
-# ---------------------------------------------------------------------------
-# Prompts — basic sanity checks
-# ---------------------------------------------------------------------------
-
-from app.agent.prompts import (
-    CLASSIFIER_HUMAN,
-    CLASSIFIER_SYSTEM,
-    NEGOTIATION_HUMAN,
-    NEGOTIATION_SYSTEM,
-    OUTREACH_HUMAN,
-    OUTREACH_SYSTEM,
+from app.agent.chat_reader import ChatMessage, ChatThread
+from app.agent.prompts_v2 import (
+    build_closer_prompt,
+    build_scribe_prompt,
+    guardrail_block,
 )
+from app.models import Lead, Listing
+from app.policy import GuardrailPolicy
 
 
-def test_negotiation_prompts_have_placeholders():
-    assert "{place_name}" in NEGOTIATION_HUMAN
-    assert "{host_name}" in NEGOTIATION_HUMAN
-    assert "{conversation}" in NEGOTIATION_HUMAN
+# --- LLM abstraction -------------------------------------------------------
 
 
-def test_outreach_prompts_have_placeholders():
-    assert "{place_name}" in OUTREACH_HUMAN
-    assert "{host_name}" in OUTREACH_HUMAN
-    assert "{amenities}" in OUTREACH_HUMAN
-
-
-def test_classifier_prompts_have_placeholders():
-    assert "{conversation}" in CLASSIFIER_HUMAN
-
-
-def test_system_prompts_non_empty():
-    assert len(NEGOTIATION_SYSTEM) > 100
-    assert len(OUTREACH_SYSTEM) > 100
-    assert len(CLASSIFIER_SYSTEM) > 100
-
-
-# ---------------------------------------------------------------------------
-# LLM abstraction
-# ---------------------------------------------------------------------------
-
-
-def test_get_llm_returns_openai_by_default():
-    """With OPENAI_API_KEY set, get_llm should return a ChatOpenAI instance."""
+def test_get_llm_openai_provider():
     from app.agent.llm import get_llm
 
-    # Clear the lru_cache before this test
     get_llm.cache_clear()
-
     with patch.dict(os.environ, {"LLM_PROVIDER": "openai", "OPENAI_API_KEY": "sk-test"}):
-        llm = get_llm()
-        assert llm is not None
-        # Should be a ChatOpenAI (or compatible)
-        assert hasattr(llm, "invoke")
-
+        assert hasattr(get_llm(), "invoke")
     get_llm.cache_clear()
 
 
@@ -69,12 +31,8 @@ def test_get_llm_gemini_provider():
     from app.agent.llm import get_llm
 
     get_llm.cache_clear()
-
     with patch.dict(os.environ, {"LLM_PROVIDER": "gemini", "GOOGLE_API_KEY": "test-key"}):
-        llm = get_llm()
-        assert llm is not None
-        assert hasattr(llm, "invoke")
-
+        assert hasattr(get_llm(), "invoke")
     get_llm.cache_clear()
 
 
@@ -82,20 +40,14 @@ def test_get_llm_perplexity_provider():
     from app.agent.llm import get_llm
 
     get_llm.cache_clear()
-
-    with patch.dict(os.environ, {"LLM_PROVIDER": "perplexity", "PERPLEXITY_API_KEY": "pplx-test"}):
-        llm = get_llm()
-        assert llm is not None
-        assert hasattr(llm, "invoke")
-
+    with patch.dict(
+        os.environ, {"LLM_PROVIDER": "perplexity", "PERPLEXITY_API_KEY": "pplx-test"}
+    ):
+        assert hasattr(get_llm(), "invoke")
     get_llm.cache_clear()
 
 
-# ---------------------------------------------------------------------------
-# Chat reader data classes
-# ---------------------------------------------------------------------------
-
-from app.agent.chat_reader import ChatMessage, ChatThread
+# --- Chat reader -----------------------------------------------------------
 
 
 def test_chat_thread_conversation_text():
@@ -116,11 +68,8 @@ def test_chat_thread_conversation_text():
 
 def test_chat_thread_last_message():
     thread = ChatThread(
-        thread_id="1",
-        host_name="Bob",
-        messages=[ChatMessage(sender="host", text="Hey")],
+        thread_id="1", host_name="Bob", messages=[ChatMessage(sender="host", text="Hey")]
     )
-    assert thread.last_message is not None
     assert thread.last_message.text == "Hey"
 
 
@@ -130,192 +79,79 @@ def test_chat_thread_empty():
     assert thread.conversation_text == ""
 
 
-# ---------------------------------------------------------------------------
-# Outreach agent — listing_to_dict
-# ---------------------------------------------------------------------------
-
-from app.agent.outreach_agent import listing_to_dict
-from app.models import Listing
+# --- v2 prompts ------------------------------------------------------------
 
 
-def test_listing_to_dict():
-    listing = Listing(
-        id="room123",
-        title="Beach Villa",
-        host_name="Carlos",
-        location="Goa, India",
-        price_per_night=50.0,
-        currency="USD",
-        rating=4.8,
-        review_count=42,
-        property_type="Villa",
-        guests=4,
-        bedrooms=2,
-        bathrooms=1.5,
-        superhost=True,
-        amenities=["WiFi", "Pool", "Kitchen"],
+def _policy(**kwargs):
+    base = dict(
+        max_price_per_night=0.0,
+        currency="INR",
+        allowed_deliverables=["2 Instagram reels", "10 edited photos"],
+        max_agent_replies_per_thread=4,
+        credential_facts={
+            "name": "Sachin Shukla",
+            "role": "founder of The Boring Education",
+            "followers": "150k+ combined",
+            "handles": "@theboringfounder",
+        },
     )
-    d = listing_to_dict(listing)
-    assert d["place_name"] == "Beach Villa"
-    assert d["host_name"] == "Carlos"
-    assert d["superhost"] == "Yes"
-    assert "WiFi" in d["amenities"]
+    base.update(kwargs)
+    return GuardrailPolicy(**base)
 
 
-# ---------------------------------------------------------------------------
-# Negotiation graph — structure
-# ---------------------------------------------------------------------------
+def test_guardrail_block_states_a_free_only_rule():
+    text = guardrail_block(_policy())
+    assert "Never agree to pay anything" in text
+    assert "2 Instagram reels" in text
+    assert "@theboringfounder" in text
+    assert "150k+ combined" in text
 
 
-def test_negotiation_graph_builds():
-    from app.agent.negotiator import build_negotiation_graph
-
-    graph = build_negotiation_graph()
-    assert graph is not None
-
-
-def test_outreach_graph_builds():
-    from app.agent.outreach_agent import build_outreach_graph
-
-    graph = build_outreach_graph()
-    assert graph is not None
+def test_guardrail_block_states_a_ceiling_when_one_is_set():
+    text = guardrail_block(_policy(max_price_per_night=2500.0))
+    assert "2500 INR" in text
+    assert "Never agree to pay anything" not in text
 
 
-# ---------------------------------------------------------------------------
-# Scheduler config
-# ---------------------------------------------------------------------------
-
-
-def test_schedule_interval_default():
-    from app.agent.scheduler import get_schedule_interval_seconds
-
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("AGENT_SCHEDULE_HOURS", None)
-        assert get_schedule_interval_seconds() == 5 * 3600
-
-
-def test_schedule_interval_custom():
-    from app.agent.scheduler import get_schedule_interval_seconds
-
-    with patch.dict(os.environ, {"AGENT_SCHEDULE_HOURS": "3"}):
-        assert get_schedule_interval_seconds() == 3 * 3600
-
-
-# ---------------------------------------------------------------------------
-# Classify node (mocked LLM)
-# ---------------------------------------------------------------------------
-
-
-def test_classify_node_with_mock_llm():
-    from app.agent.negotiator import classify_node
-
-    mock_response = MagicMock()
-    mock_response.content = json.dumps({"needs_reply": True, "reason": "host asked a question"})
-
-    mock_llm = MagicMock()
-    mock_llm.invoke.return_value = mock_response
-
-    with patch("app.agent.negotiator.get_llm", return_value=mock_llm):
-        state = {
-            "candidates": [
-                {
-                    "thread_id": "1",
-                    "host_name": "Host A",
-                    "conversation_text": "**Host**: Are you available next week?",
-                    "messages": [],
-                }
-            ]
-        }
-        result = classify_node(state)
-        assert len(result["candidates"]) == 1
-        assert result["candidates"][0]["thread_id"] == "1"
-        assert result["candidates"][0]["classify_reason"] == "host asked a question"
-
-
-def test_classify_node_no_reply_needed():
-    from app.agent.negotiator import classify_node
-
-    mock_response = MagicMock()
-    mock_response.content = json.dumps({"needs_reply": False, "reason": "user already replied"})
-
-    mock_llm = MagicMock()
-    mock_llm.invoke.return_value = mock_response
-
-    with patch("app.agent.negotiator.get_llm", return_value=mock_llm), patch(
-        "app.agent.negotiator.dismiss_thread"
-    ) as mock_dismiss:
-        state = {
-            "candidates": [
-                {
-                    "thread_id": "2",
-                    "host_name": "Host B",
-                    "conversation_text": "**You**: Thanks for the offer!",
-                    "messages": [],
-                }
-            ]
-        }
-        result = classify_node(state)
-        assert len(result["candidates"]) == 0
-        mock_dismiss.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Generate replies node (mocked LLM)
-# ---------------------------------------------------------------------------
-
-
-def test_generate_reply_node_with_mock_llm():
-    from app.agent.negotiator import generate_reply_node
-
-    mock_response = MagicMock()
-    mock_response.content = "Hi! I'd love to discuss a collab. Would a content exchange work?"
-
-    mock_llm = MagicMock()
-    mock_llm.invoke.return_value = mock_response
-
-    with patch("app.agent.negotiator.get_llm", return_value=mock_llm):
-        state = {
-            "picked_thread": {
-                "thread_id": "1",
-                "host_name": "Alice",
-                "listing_title": "Beachfront Villa",
-                "conversation_text": "**Host**: Are you interested?",
-                "classify_reason": "host asked question",
-            }
-        }
-        reply = generate_reply_node(state)["generated_reply"]
-        assert reply["host_name"] == "Alice"
-        assert "collab" in reply["reply"].lower()
-
-
-def test_generate_reply_node_without_a_picked_thread():
-    from app.agent.negotiator import generate_reply_node
-
-    assert generate_reply_node({"picked_thread": {}})["generated_reply"] == {}
-
-
-# ---------------------------------------------------------------------------
-# Outreach generation (mocked LLM)
-# ---------------------------------------------------------------------------
-
-
-def test_generate_outreach_message_with_mock_llm():
-    from app.agent.outreach_agent import generate_outreach_message
-
-    mock_response = MagicMock()
-    mock_response.content = "Hey Carlos! Your Beach Villa in Goa looks incredible..."
-
-    mock_llm = MagicMock()
-    mock_llm.invoke.return_value = mock_response
-
-    listing = Listing(
-        id="room123",
-        title="Beach Villa",
-        host_name="Carlos",
-        location="Goa, India",
+def test_scribe_prompt_carries_the_listing_context():
+    """The whole point of the v2 Scribe: write from what the host actually said."""
+    listing = Listing(id="L1", title="Sea Villa", host_name="Asha", location="Goa, India")
+    lead = Lead(
+        listing_id="L1",
+        description="A sunlit villa above the beach.",
+        host_bio="I grew up here.",
+        review_excerpts=["The sunrise deck is unreal"],
+        amenities=["Wifi", "Dedicated workspace"],
     )
+    system, human = build_scribe_prompt(listing, lead, _policy(), "Known for beach shacks")
 
-    with patch("app.agent.outreach_agent.get_llm", return_value=mock_llm):
-        msg = generate_outreach_message(listing)
-        assert "Carlos" in msg
-        assert "Beach Villa" in msg
+    assert "Sachin Shukla" in system
+    assert "sunlit villa" in human
+    assert "sunrise deck" in human
+    assert "Dedicated workspace" in human
+    assert "beach shacks" in human
+    assert "Asha" in human
+
+
+def test_scribe_prompt_degrades_without_enrichment():
+    """A lead whose detail page failed to scrape must still produce a prompt."""
+    listing = Listing(id="L1", title="Sea Villa", host_name="Asha")
+    system, human = build_scribe_prompt(listing, None, _policy())
+    assert "(not available)" in human
+    assert "(no reviews yet)" in human
+    assert system
+
+
+def test_closer_prompt_includes_the_round_number():
+    system, human = build_closer_prompt(
+        place_name="Sea Villa",
+        host_name="Asha",
+        location="Goa, India",
+        booking_status="invited to book",
+        conversation="Host: Tell me more.",
+        round_number=3,
+        policy=_policy(),
+    )
+    assert "round 3" in system
+    assert "Tell me more" in human
+    assert "Sea Villa" in human

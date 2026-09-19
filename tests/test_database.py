@@ -14,12 +14,9 @@ from app.database import (
     update_search_status,
     save_listings,
     get_listings,
-    has_sent_outreach_to_listing,
-    create_outreach_messages,
-    get_outreach_messages,
-    update_outreach_status,
 )
-from app.models import Listing, OutreachMessage, OutreachStatus, Search, SearchStatus
+from app.leads import upsert_lead
+from app.models import Listing, Search, SearchStatus
 
 
 @pytest.fixture
@@ -149,15 +146,12 @@ def test_duplicate_listings_ignored(db_path):
     assert len(retrieved) == 1
 
 
-def test_get_listings_includes_rows_referenced_by_outreach_only(db_path):
-    """When the same Airbnb listing id was stored under another search, outreach
-    for a new search still resolves listing rows (INSERT OR IGNORE leaves the
-    old search_id on the row).
+def test_get_listings_resolves_rows_claimed_by_an_earlier_search(db_path):
+    """A listing rediscovered by a later search keeps the first search's id on
+    the row, so the lead is what ties it to the new run.
     """
-    search1 = Search(location="First", checkin="2026-01-01", checkout="2026-01-07")
-    search2 = Search(location="Second", checkin="2026-01-01", checkout="2026-01-07")
-    sid1 = create_search(search1, db_path)
-    sid2 = create_search(search2, db_path)
+    sid1 = create_search(Search(location="First"), db_path)
+    sid2 = create_search(Search(location="Second"), db_path)
 
     listing = Listing(
         id="room-999",
@@ -171,15 +165,12 @@ def test_get_listings_includes_rows_referenced_by_outreach_only(db_path):
 
     assert get_listings(sid2, db_path) == []
 
-    template = "Hi {host_name}, love {place_name} in {location}"
-    create_outreach_messages(sid2, [listing], template, db_path)
+    upsert_lead("room-999", search_id=sid2, db_path=db_path)
 
     combined = get_listings(sid2, db_path)
     assert len(combined) == 1
     assert combined[0].id == "room-999"
     assert combined[0].title == "Cottage"
-
-
 def test_search_with_optional_fields(db_path):
     """Test creating a search with only location (no dates or price)."""
     search = Search(location="Tokyo, Japan")
@@ -190,136 +181,3 @@ def test_search_with_optional_fields(db_path):
     assert retrieved.checkin == ""
     assert retrieved.min_price is None
     assert retrieved.max_price is None
-
-
-def test_has_sent_outreach_to_listing(db_path):
-    """After one message is SENT, we treat the listing as already contacted (any search)."""
-    search = Search(location="A", checkin="2026-01-01", checkout="2026-01-08")
-    sid = create_search(search, db_path)
-    listings = [Listing(id="L1", title="T", host_name="H")]
-    save_listings(listings, sid, db_path)
-    template = "Hi {host_name} - {place_name} in {location}"
-    create_outreach_messages(sid, listings, template, db_path)
-    assert has_sent_outreach_to_listing("L1", db_path) is False
-    msgs = get_outreach_messages(sid, db_path)
-    update_outreach_status(msgs[0].id, OutreachStatus.SENT, "", db_path)
-    assert has_sent_outreach_to_listing("L1", db_path) is True
-    assert has_sent_outreach_to_listing("", db_path) is False
-
-
-def test_create_outreach_skips_listing_globally_sent_in_other_search(db_path):
-    """Do not create a new PENDING row if we already SENT to that listing_id elsewhere."""
-    s1 = create_search(Search(location="A", checkin="2026-01-01", checkout="2026-01-08"), db_path)
-    s2 = create_search(Search(location="B", checkin="2026-01-01", checkout="2026-01-08"), db_path)
-    template = "Hi {host_name} - {place_name} in {location}"
-    l = Listing(id="shared-room", title="Cottage", host_name="Jo", location="A")
-    save_listings([l], s1, db_path)
-    create_outreach_messages(s1, [l], template, db_path)
-    m1 = get_outreach_messages(s1, db_path)
-    assert len(m1) == 1
-    update_outreach_status(m1[0].id, OutreachStatus.SENT, "", db_path)
-    save_listings([l], s2, db_path)
-    created2 = create_outreach_messages(s2, [l], template, db_path)
-    assert created2 == []
-    assert get_outreach_messages(s2, db_path) == []
-
-
-def test_create_outreach_messages(db_path):
-    """Test creating outreach messages for listings."""
-    search = Search(location="Goa, India")
-    sid = create_search(search, db_path)
-
-    listings = [
-        Listing(id="111", title="Beach Villa", host_name="Alice", location="Goa, India"),
-        Listing(id="222", title="Mountain Lodge", host_name="Bob", location="Goa, India"),
-    ]
-    save_listings(listings, sid, db_path)
-
-    template = "Hi {host_name}, I love {place_name} in {location}!"
-    messages = create_outreach_messages(sid, listings, template, db_path)
-
-    assert len(messages) == 2
-    assert messages[0].host_name == "Alice"
-    assert "Beach Villa" in messages[0].message
-    assert messages[1].host_name == "Bob"
-    assert "Mountain Lodge" in messages[1].message
-    assert all(m.status == OutreachStatus.PENDING for m in messages)
-
-
-def test_get_outreach_messages(db_path):
-    """Test retrieving outreach messages for a search."""
-    search = Search(location="Bali")
-    sid = create_search(search, db_path)
-
-    listings = [
-        Listing(id="333", title="Treehouse", host_name="Charlie", location="Bali"),
-    ]
-    save_listings(listings, sid, db_path)
-
-    template = "Hi {host_name}!"
-    create_outreach_messages(sid, listings, template, db_path)
-
-    messages = get_outreach_messages(sid, db_path)
-    assert len(messages) == 1
-    assert messages[0].listing_id == "333"
-    assert messages[0].host_name == "Charlie"
-
-
-def test_update_outreach_status(db_path):
-    """Test updating outreach message status."""
-    search = Search(location="Paris")
-    sid = create_search(search, db_path)
-
-    listings = [
-        Listing(id="444", title="Parisian Flat", host_name="Diana", location="Paris"),
-    ]
-    save_listings(listings, sid, db_path)
-
-    template = "Hi {host_name}!"
-    messages = create_outreach_messages(sid, listings, template, db_path)
-
-    # Update to sent
-    update_outreach_status(messages[0].id, OutreachStatus.SENT, "", db_path)
-    updated = get_outreach_messages(sid, db_path)
-    assert updated[0].status == OutreachStatus.SENT
-    assert updated[0].sent_at is not None
-
-
-def test_update_outreach_status_failed(db_path):
-    """Test updating outreach message status to failed with error."""
-    search = Search(location="Tokyo")
-    sid = create_search(search, db_path)
-
-    listings = [
-        Listing(id="555", title="Tokyo Apartment", host_name="Eve", location="Tokyo"),
-    ]
-    save_listings(listings, sid, db_path)
-
-    template = "Hi {host_name}!"
-    messages = create_outreach_messages(sid, listings, template, db_path)
-
-    update_outreach_status(messages[0].id, OutreachStatus.FAILED, "Connection timeout", db_path)
-    updated = get_outreach_messages(sid, db_path)
-    assert updated[0].status == OutreachStatus.FAILED
-    assert updated[0].error == "Connection timeout"
-
-
-def test_duplicate_outreach_messages_skipped(db_path):
-    """Test that duplicate outreach messages are not created."""
-    search = Search(location="Goa")
-    sid = create_search(search, db_path)
-
-    listings = [
-        Listing(id="666", title="Beach Shack", host_name="Frank", location="Goa"),
-    ]
-    save_listings(listings, sid, db_path)
-
-    template = "Hi {host_name}!"
-    first = create_outreach_messages(sid, listings, template, db_path)
-    second = create_outreach_messages(sid, listings, template, db_path)
-
-    assert len(first) == 1
-    assert len(second) == 0  # Already exists, skipped
-
-    all_messages = get_outreach_messages(sid, db_path)
-    assert len(all_messages) == 1

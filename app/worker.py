@@ -1,8 +1,9 @@
 """The worker: the only process that drives a browser.
 
-Splitting this out from the API is what fixes v1's structural problem. There,
-Flask request threads called ``asyncio.run()`` around Playwright, so a scrape
-and the UI competed for the same Chrome profile and the same event loop.
+Keeping this separate from the API is a hard rule, not a preference. Playwright
+is async and a scrape can run for minutes; if request handlers drove it, the
+browser profile and the event loop would be contended by whoever happened to
+hit an endpoint.
 
 Here the API only ever writes rows to the ``jobs`` table. This process leases
 them, does the work, and is the sole owner of the browser session.

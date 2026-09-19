@@ -77,28 +77,6 @@ def get_chrome_cdp_url() -> Optional[str]:
     return raw or None
 
 
-# Outreach message template — placeholders: {host_name}, {place_name}, {location}
-DEFAULT_OUTREACH_MESSAGE = """Hi {host_name}! 👋
-
-I just came across "{place_name}" while planning a trip to {location} and honestly, it looks amazing — exactly the kind of place I've been looking for.
-
-A little about me — I'm Sachin, a remote software engineer and the founder of The Boring Education. I also create content online, and my pages (@theboringfounder and @theboringeducation) have grown to about 150k+ followers combined.
-
-I'm reaching out because I'd genuinely love to stay at your place. I travel a lot for work and always look for unique homes over hotels. In return for the stay, I'd be happy to create some organic content — photos, reels, an honest review — that showcases your property to my audience and helps drive future bookings.
-
-No pressure at all! If this sounds interesting, I'd love to hop on a quick chat and figure out dates that work for both of us.
-
-Either way, beautiful place — you've done a great job with it!
-
-Cheers,
-Sachin"""
-
-
-def get_outreach_message_template() -> str:
-    """Get the outreach message template."""
-    return os.getenv("OUTREACH_MESSAGE", DEFAULT_OUTREACH_MESSAGE)
-
-
 def get_outreach_max_sends_per_window() -> int:
     """Max successful host messages per sliding time window (global across all searches)."""
     raw = (os.getenv("OUTREACH_MAX_SENDS_PER_WINDOW") or "5").strip()

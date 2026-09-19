@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Airbnb Automate v2 — campaign control.
+"""Airbnb Automate — campaign control.
 
-The v1 CLI drove the browser directly. This one talks to the job queue instead,
-so work survives a restart and the worker keeps the single browser session.
-
+    python manage.py login                  # sign in to Airbnb once, by hand
     python manage.py campaign "Winter tour" --window 2026-11 2027-02 \\
                      --places-file locations.md --origin "Delhi"
     python manage.py worker                 # drain the queue (needs a login)
@@ -48,6 +46,29 @@ def _resolve_places(args) -> list[str]:
             seen.add(place)
             unique.append(place)
     return unique
+
+
+def cmd_login(args) -> int:
+    """Airbnb blocks automated sign-in, so a human does it once and the
+    persistent Chrome profile keeps the session for the worker."""
+    from app.outreach import login_to_airbnb_sync
+
+    print("Opening a browser — sign in to Airbnb, then leave the rest to the worker.")
+    if login_to_airbnb_sync():
+        print("✓ Logged in. The session is saved; you can close this.")
+        return 0
+    print("✗ Login not detected. Try PLAYWRIGHT_CHANNEL=chrome, or CHROME_CDP_URL.")
+    return 1
+
+
+def cmd_session(args) -> int:
+    from app.outreach import check_airbnb_login_status_sync
+
+    if check_airbnb_login_status_sync():
+        print("✓ Airbnb session is live.")
+        return 0
+    print("✗ Not logged in — run: python manage.py login")
+    return 1
 
 
 def cmd_campaign(args) -> int:
@@ -168,6 +189,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("login", help="sign in to Airbnb once (opens a browser)").set_defaults(
+        func=cmd_login
+    )
+    sub.add_parser("session", help="check whether the Airbnb session is live").set_defaults(
+        func=cmd_session
+    )
 
     campaign = sub.add_parser("campaign", help="create a campaign and queue its first work")
     campaign.add_argument("name")

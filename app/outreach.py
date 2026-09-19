@@ -1,13 +1,17 @@
-"""Airbnb host outreach automation using Playwright.
+"""Airbnb login and listing-page messaging, via Playwright.
 
-Flow:
-1. Session lives in a persistent user-data directory (or CDP) — Chrome signed in to Google is
-   not the same as an Airbnb account.
-2. :func:`wait_for_airbnb_session_ready` blocks until a real Airbnb sign-in (DOM + cookies
-   and a /trips check), including sign up; outreach uses the same wait so messaging never runs
-   as a guest.
-3. For each listing (sorted by listing URL), open that URL, "Contact Host", type the message,
-   and send; track status in the database. One failure does not stop the rest.
+Two responsibilities, both of which need a real browser:
+
+1. **Login.** Airbnb blocks automated sign-in, so a human does it once and the
+   session persists in a user-data directory (or an attached Chrome over CDP).
+   Being signed in to Google is not the same as being signed in to Airbnb, so
+   :func:`wait_for_airbnb_session_ready` blocks on DOM, cookies *and* a /trips
+   check before declaring success.
+2. **Sending.** :func:`_send_message_to_host` opens a listing, clicks "Contact
+   host", types, sends, and reports the thread the send created.
+
+Who sends and what they say is decided upstream by the Scribe, the Warden and
+the send budget. This module only drives the browser.
 """
 
 import asyncio
@@ -22,36 +26,15 @@ from playwright.async_api import (
     Page,
 )
 
-from app import deals as deal_repo
 from app.browser_session import (
     close_airbnb_session,
     flush_profile_after_login,
     open_airbnb_browser,
     save_storage_state,
 )
-from app.config import get_airbnb_base_url, get_outreach_message_template
-from app.database import (
-    create_outreach_messages,
-    get_listings,
-    get_outreach_messages,
-    has_sent_outreach_to_listing,
-    update_outreach_status,
-)
-from app.models import (
-    DealState,
-    Listing,
-    MessageKind,
-    OutreachMessage,
-    OutreachStatus,
-)
-from app.outreach_quota import (
-    record_successful_send,
-    sleep_between_outreach_attempts,
-    wait_until_send_allowed,
-)
-from app.send_budget import Channel, SendingFrozen, reserved_send
+from app.config import get_airbnb_base_url
+from app.models import Listing
 from app.thread_linking import capture_thread_reference
-from app.warden import review as warden_review
 
 logger = logging.getLogger(__name__)
 
@@ -734,280 +717,3 @@ async def _send_message_to_host(
     if thread_id:
         logger.info("Linked to thread %s", thread_id)
     return thread_id, thread_url
-
-
-async def run_outreach(
-    search_id: int,
-    message_template: Optional[str] = None,
-    db_path: Optional[str] = None,
-) -> dict:
-    """Run the outreach process for all listings in a search.
-
-    Prerequisites: the user must have logged in via ``login_to_airbnb()``
-    first so that the persistent profile has a valid Airbnb session.
-
-    1. Creates outreach message records if they don't exist
-    2. Drops stale PENDING rows if this listing was already SENT in another search
-    3. Orders remaining work by listing URL, then opens a browser with the persisted session
-    4. Verifies login — if not logged in, marks all pending messages as failed
-    5. For each URL in order, sends a message; failures are recorded and the next URL runs
-
-    Returns a summary dict with counts of sent/failed/skipped messages.
-    """
-    if message_template is None:
-        message_template = get_outreach_message_template()
-
-    # Get listings for this search
-    listings = get_listings(search_id, db_path)
-    if not listings:
-        logger.warning("No listings found for search %d", search_id)
-        return {
-            "total": 0,
-            "sent": 0,
-            "failed": 0,
-            "skipped": 0,
-            "airbnb_rate_limited": False,
-        }
-
-    # Create outreach records for new listings
-    create_outreach_messages(search_id, listings, message_template, db_path)
-
-    # Get all outreach messages (including previously created)
-    messages = get_outreach_messages(search_id, db_path)
-    pending = [m for m in messages if m.status == OutreachStatus.PENDING]
-
-    # Stale PENDING rows: another search may have already SENT to this listing_id
-    stale_skipped = 0
-    for m in list(pending):
-        if has_sent_outreach_to_listing(m.listing_id, db_path):
-            update_outreach_status(
-                m.id,
-                OutreachStatus.SKIPPED,
-                "Already messaged this listing in a previous run",
-                db_path,
-            )
-            stale_skipped += 1
-    messages = get_outreach_messages(search_id, db_path)
-    pending = [m for m in messages if m.status == OutreachStatus.PENDING]
-
-    def _message_url(msg: OutreachMessage) -> str:
-        for lst in listings:
-            if lst.id == msg.listing_id:
-                u = (lst.url or "").strip()
-                return u if u else f"{_airbnb_origin()}/rooms/{lst.id}"
-        return f"{_airbnb_origin()}/rooms/{msg.listing_id}" if msg.listing_id else ""
-
-    pending.sort(key=_message_url)
-
-    if not pending:
-        logger.info("No pending outreach messages for search %d", search_id)
-        return {
-            "total": len(messages),
-            "sent": sum(1 for m in messages if m.status == OutreachStatus.SENT),
-            "failed": sum(1 for m in messages if m.status == OutreachStatus.FAILED),
-            "skipped": sum(1 for m in messages if m.status == OutreachStatus.SKIPPED),
-            "airbnb_rate_limited": False,
-        }
-
-    summary = {
-        "total": len(messages),
-        "sent": 0,
-        "failed": 0,
-        "skipped": stale_skipped,
-        "airbnb_rate_limited": False,
-    }
-
-    async with async_playwright() as pw:
-        context, browser, uses_cdp = None, None, False
-        try:
-            context, page, browser, uses_cdp = await open_airbnb_browser(
-                pw, headless=False
-            )
-        except Exception as e:
-            logger.error("Could not start browser for outreach: %s", e)
-            for msg in pending:
-                update_outreach_status(
-                    msg.id,
-                    OutreachStatus.FAILED,
-                    f"Browser failed to start: {e}",
-                    db_path,
-                )
-                summary["failed"] += 1
-            return summary
-
-        try:
-            await page.goto(
-                _airbnb_origin(), wait_until="domcontentloaded", timeout=30000
-            )
-            await _async_sleep_ms(1500)
-
-            if not await wait_for_airbnb_session_ready(page, context):
-                for msg in pending:
-                    update_outreach_status(
-                        msg.id,
-                        OutreachStatus.FAILED,
-                        "Airbnb sign-in not completed in time. Finish sign up or sign in in the browser, then start outreach again.",
-                        db_path,
-                    )
-                    summary["failed"] += 1
-                return summary
-
-            page = await _use_airbnb_page_for_outreach(page, context)
-
-            # Send messages URL-by-URL (ordered), one listing at a time; errors continue to next
-            for idx, msg in enumerate(pending):
-                listing = next(
-                    (lst for lst in listings if lst.id == msg.listing_id), None
-                )
-                if not listing:
-                    update_outreach_status(
-                        msg.id, OutreachStatus.SKIPPED, "Listing not found", db_path
-                    )
-                    summary["skipped"] += 1
-                    await sleep_between_outreach_attempts()
-                    continue
-
-                visit_url = _message_url(msg)
-                logger.info(
-                    "Outreach %d/%d — %s",
-                    idx + 1,
-                    len(pending),
-                    visit_url,
-                )
-
-                deal_id = deal_repo.upsert_deal(
-                    msg.listing_id,
-                    host_name=msg.host_name,
-                    place_name=msg.place_name,
-                    location=msg.location,
-                    listing_url=listing.url,
-                    db_path=db_path,
-                )
-                deal = deal_repo.get_deal(deal_id, db_path)
-                verdict = warden_review(msg.message, deal=deal, db_path=db_path)
-                message_id = deal_repo.record_message(
-                    deal_id,
-                    msg.message,
-                    kind=MessageKind.OUTREACH,
-                    agent="scribe",
-                    idempotency_key=f"outreach:{msg.id}",
-                    legacy_outreach_id=msg.id,
-                    db_path=db_path,
-                )
-
-                if not verdict.allowed:
-                    deal_repo.mark_message_blocked(message_id, verdict.reason, db_path)
-                    deal_repo.escalate(deal_id, verdict.reason, db_path=db_path)
-                    update_outreach_status(
-                        msg.id, OutreachStatus.SKIPPED, verdict.reason, db_path
-                    )
-                    summary["skipped"] += 1
-                    continue
-
-                update_outreach_status(msg.id, OutreachStatus.SENDING, "", db_path)
-
-                try:
-                    async with reserved_send(Channel.OUTREACH, db_path):
-                        thread_id, thread_url = await _send_message_to_host(
-                            page, listing, msg.message
-                        )
-                    update_outreach_status(msg.id, OutreachStatus.SENT, "", db_path)
-                    deal_repo.mark_message_sent(message_id, db_path)
-                    deal_repo.advance_to(
-                        deal_id,
-                        DealState.CONTACTED,
-                        reason="outreach sent",
-                        actor="scribe",
-                        db_path=db_path,
-                    )
-                    if thread_id:
-                        deal_repo.link_thread(
-                            deal_id, thread_id, thread_url=thread_url, db_path=db_path
-                        )
-                    summary["sent"] += 1
-                    logger.info(
-                        "✅ Sent message to %s (%s)",
-                        msg.host_name,
-                        msg.place_name,
-                    )
-                except SendingFrozen as e:
-                    deal_repo.mark_message_blocked(message_id, str(e), db_path)
-                    update_outreach_status(
-                        msg.id, OutreachStatus.SKIPPED, str(e), db_path
-                    )
-                    summary["skipped"] += 1
-                    logger.error("🛑 %s — stopping this run", e)
-                    for msg2 in pending[idx + 1 :]:
-                        update_outreach_status(
-                            msg2.id, OutreachStatus.SKIPPED, str(e), db_path
-                        )
-                        summary["skipped"] += 1
-                    break
-                except AirbnbHostQuotaUIError as e:
-                    error_msg = str(e)
-                    deal_repo.mark_message_failed(message_id, error_msg, db_path)
-                    update_outreach_status(
-                        msg.id, OutreachStatus.SKIPPED, error_msg, db_path
-                    )
-                    summary["skipped"] += 1
-                    summary["airbnb_rate_limited"] = True
-                    logger.error("🛑 Airbnb host messaging cap: %s", error_msg)
-                    for msg2 in pending[idx + 1 :]:
-                        update_outreach_status(
-                            msg2.id,
-                            OutreachStatus.SKIPPED,
-                            "Paused: Airbnb rate limit — try again in a few hours.",
-                            db_path,
-                        )
-                        summary["skipped"] += 1
-                    break
-                except Exception as e:
-                    error_msg = str(e)
-                    deal_repo.mark_message_failed(message_id, error_msg, db_path)
-                    update_outreach_status(
-                        msg.id, OutreachStatus.FAILED, error_msg, db_path
-                    )
-                    summary["failed"] += 1
-                    logger.error(
-                        "❌ Failed to send to %s: %s", msg.host_name, error_msg
-                    )
-
-                await sleep_between_outreach_attempts()
-
-        except Exception as e:
-            logger.exception("Outreach error (remaining messages not sent this run): %s", e)
-        finally:
-            if context is not None:
-                await close_airbnb_session(context, browser, uses_cdp=uses_cdp)
-
-    return summary
-
-
-def run_outreach_sync(
-    search_id: int,
-    message_template: Optional[str] = None,
-    db_path: Optional[str] = None,
-) -> dict:
-    """Synchronous wrapper for run_outreach.
-
-    Does not raise: returns a summary dict; on unexpected failure includes ``error`` key
-    so callers can finish the location and move on.
-    """
-    try:
-        return asyncio.run(
-            run_outreach(
-                search_id=search_id,
-                message_template=message_template,
-                db_path=db_path,
-            )
-        )
-    except Exception as e:
-        logger.exception("run_outreach_sync failed: %s", e)
-        return {
-            "total": 0,
-            "sent": 0,
-            "failed": 0,
-            "skipped": 0,
-            "airbnb_rate_limited": False,
-            "error": str(e),
-        }

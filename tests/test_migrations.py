@@ -53,6 +53,13 @@ def test_init_db_creates_v2_tables(db_path):
         assert expected in tables
 
 
+def test_legacy_tables_are_dropped(db_path):
+    init_db(db_path)
+    tables = _tables(db_path)
+    assert "outreach_messages" not in tables
+    assert "dismissed_threads" not in tables
+
+
 def test_migrations_are_recorded_and_not_reapplied(db_path):
     init_db(db_path)
     conn = sqlite3.connect(db_path)

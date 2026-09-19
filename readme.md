@@ -1,78 +1,81 @@
 # 🏠 Airbnb Automate
 
-A tool to search Airbnb listings, **automatically outreach to hosts**, and **negotiate stays via an AI agent** — all from a CLI or web UI.
+An agent office that finds places to stay across India, writes a personal message to each host, negotiates a content-for-stay collaboration, and hands you the deals that are ready to book.
+
+You supply the card. Everything up to that point runs on its own.
 
 ---
 
-## v2 — the agent office
+## How it works
 
-v2 turns the one-shot script into a durable pipeline. A **Planner** breaks a campaign goal into jobs on a queue; specialist agents drain it: **Scout** (where to go, and in which month), **Prospector** (find listings), **Analyst** (score which are worth a message), **Scribe** (write it), **Closer** (negotiate and reply), **Warden** (block anything that breaks your rules), **Chronicler** (the dashboard).
+A **Planner** turns a campaign goal ("six months across North India, Nov–Apr") into jobs on a durable queue. A fixed roster of specialists drains it. Roles never change — the *work* is what multiplies.
 
-The agents run **fully autonomously up to Airbnb's payment wall** — they negotiate and agree terms, then hand you a Ready to Book queue, because only you have the card.
+| Agent | Does | Lives in |
+|---|---|---|
+| **Planner** | Breaks the goal into jobs, keeps the pipeline fed | [app/agent/planner.py](app/agent/planner.py) |
+| **Scout** | Researches a place month by month — seasonality, connectivity, cost, events | [app/agent/scout.py](app/agent/scout.py) |
+| **Router** | Orders places into a route that makes geographic sense | [app/agent/router.py](app/agent/router.py) |
+| **Prospector** | Scrapes listings, then the detail page for real context | [app/listing_detail.py](app/listing_detail.py) |
+| **Analyst** | Scores which hosts are actually likely to say yes | [app/agent/analyst.py](app/agent/analyst.py) |
+| **Scribe** | Writes the opening message from the host's own words | [app/agent/scribe.py](app/agent/scribe.py) |
+| **Closer** | Negotiates across rounds, sends replies, extracts agreed terms | [app/agent/closer.py](app/agent/closer.py) |
+| **Warden** | Blocks any message that breaks your rules — deterministic, not a prompt | [app/warden.py](app/warden.py) |
+| **Chronicler** | Builds the brief and the dashboard | [app/agent/chronicler.py](app/agent/chronicler.py) |
 
-### Two processes
+The agents run **fully autonomously up to Airbnb's payment wall**. They negotiate, agree terms, and stop — because only you can pay.
 
-The API never touches the browser; the worker owns it exclusively. Run the worker where you're logged in to Airbnb.
+### The pipeline
 
-```bash
-make api      # dashboard on http://127.0.0.1:8000
-make worker   # drains the job queue, drives the browser
+```
+campaign goal
+  → research a place        (Scout)
+  → order the route         (Router)
+  → discover listings       (Prospector)
+  → enrich from detail page (Prospector)
+  → score the lead          (Analyst)
+  → write + send outreach   (Scribe → Warden → send budget)
+  → host replies            (inbox sync)
+  → negotiate               (Closer → Warden → send budget)
+  → extract agreed terms    (Closer)
+  → READY TO BOOK           ← you take over here
 ```
 
-### Start a campaign
+### Every host relationship is a Deal
 
-```bash
-# Places come from locations.md unless you pass --places / --places-file
-python manage.py campaign "Winter tour" \
-    --window 2026-11 2027-02 --origin "Delhi" --nights 7
-
-python manage.py worker        # research → route → discover → score → outreach
-python manage.py itinerary     # the route the Router planned
-python manage.py brief         # today's brief in the terminal
-python manage.py status        # queue depth + how many sends are left
-python manage.py sync          # queue an inbox sync
+```mermaid
+stateDiagram-v2
+    [*] --> discovered
+    discovered --> qualified
+    qualified --> contacted
+    contacted --> host_replied
+    host_replied --> negotiating
+    negotiating --> negotiating
+    negotiating --> terms_agreed
+    terms_agreed --> ready_to_book
+    ready_to_book --> booked: you pay
+    booked --> stayed
+    stayed --> content_delivered
+    contacted --> stale: no reply
+    stale --> host_replied
+    negotiating --> rejected
+    negotiating --> needs_human: Warden blocked
+    needs_human --> negotiating
 ```
 
-### The kill switch
-
-One flag freezes every outbound message immediately. The worker re-reads it before each send, so it takes effect mid-run.
-
-```bash
-python manage.py freeze --reason "account looks flagged"
-python manage.py resume
-```
-
-### Guardrails
-
-Full autonomy means the only thing between the model and a commitment is the **Warden**, which validates the final text deterministically — prompts leak, validators don't. It blocks a draft and parks the deal for you if it would:
-
-- agree to pay above your per-night ceiling,
-- commit to specific calendar dates rather than a window,
-- promise more than your approved deliverables,
-- share contact details or suggest going off-platform,
-- claim more reach than your fact sheet allows,
-- exceed the reply cap on one thread.
-
-Configure these in `.env` (seeds) or from the dashboard at `POST /api/policy` (live). See `.env.example`.
-
-### Send budget
-
-Airbnb caps host messaging. v1 only counted first-touch outreach, so auto-sending negotiation replies would have silently doubled the real rate. In v2 **outreach and negotiation share one budget**; negotiation just gets higher queue priority, because a warm thread is worth far more than a cold message. The Planner won't queue sends it has no budget to deliver.
-
-The metric on the dashboard is **deals closed per 100 messages** — volume is capped, so the only way to improve is to convert better.
+Every transition is an append-only event, so the dashboard funnel is derived from history rather than guessed at.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+### 1. Install
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
-# Recommended for Airbnb login (uses your installed Google Chrome; OAuth works better)
+# Recommended — real Chrome makes Airbnb's OAuth login work reliably
 playwright install chrome
 ```
 
@@ -82,275 +85,278 @@ Set `PLAYWRIGHT_CHANNEL=chrome` in `.env` when using the Chrome channel.
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum set GOOGLE_API_KEY for the negotiate agent
 ```
 
-### 3. Run — Web UI
+At minimum set an LLM key (`GOOGLE_API_KEY` for the default Gemini provider). Then review the **guardrail** block — with full autonomy those values are the only thing between the model and a commitment you have to honour.
+
+### 3. Log in to Airbnb, once
+
+Airbnb blocks automated sign-in, so you do it by hand and the session persists in
+a Chrome profile at `data/airbnb_browser_profile/` (with a cookie backup at
+`data/browser_state.json`). The worker reuses it for every scrape and send.
 
 ```bash
-make up     # start in the background
-# Open http://localhost:5000  (or FLASK_PORT from .env)
-make down   # stop
+make login      # opens a browser — sign in, then close it
+make session    # check the session is still live
 ```
 
-`make up` uses `.venv` or `venv` when present. Same as `python run.py`, just start/stop from the terminal.
+If the login never "sticks" or the browser opens logged out:
 
-### 4. Run — CLI (Outreach Autopilot) 🤖
+1. Set `PLAYWRIGHT_CHANNEL=chrome` and run `playwright install chrome`, **or**
+2. Start Chrome yourself with `--remote-debugging-port` and a dedicated
+   `--user-data-dir`, log in to Airbnb there, leave it open, and set
+   `CHROME_CDP_URL` in `.env` so the app attaches to *your* browser instead of
+   launching one.
 
-For a fully hands-off experience, use the CLI script. It scrapes listings and sends outreach invites automatically.
-
-**`locations.md`:** Add one location per line in the project root (lines starting with `#` are comments). If you omit `--locations`, the CLI loads `locations.md` automatically when that file exists. Use `--locations-file path/to/file.md` to read a specific file, or combine `--locations` with `--locations-file` to merge both.
+### 4. Start a campaign
 
 ```bash
-# From locations.md only (no --locations) when locations.md exists in the project root
-python cli.py
-
-# Explicit file (same format: one place per line)
-python cli.py --locations-file locations.md
-
-# Merge inline places with file lines
-python cli.py --locations "Goa, India" --locations-file locations.md
-
-# One-time run: 3 invites each to multiple locations
-python cli.py --locations "Himachal Pradesh, India" "Bali, Indonesia" "Manali, India" "Ladakh, India"
-
-# Default: flexible trip (1 week), headless browser — 5 invites, price filters
-python cli.py --locations "Goa, India" "Pondicherry, India" \
-              --invites 5 --flex-duration 1 --flex-duration-unit week \
-              --min-price 20 --max-price 120
-
-# Fixed calendar dates
-python cli.py --locations "Goa, India" --date-mode fixed \
-              --checkin 2026-07-01 --checkout 2026-07-07
-
-# Run on autopilot every 4 hours (Ctrl+C to stop)
-python cli.py --locations "Himachal Pradesh, India" "Bali, Indonesia" "Manali, India" "Ladakh, India" --schedule
-
-# Dry run: scrape only, no messages sent
-python cli.py --locations "Goa, India" --dry-run
-
-# Debug only: show the browser (CLI runs headless by default)
-python cli.py --locations "Goa, India" --no-headless
+# Destinations come from locations.md unless you pass --places / --places-file
+python manage.py campaign "Winter tour" \
+    --window 2026-11 2027-02 --origin "Delhi" --nights 7
 ```
 
-### 5. Run — Negotiate Agent 🤖💬
-
-The negotiate agent reads your Airbnb inbox, identifies threads worth replying to, and drafts a negotiation message — all via a single CLI command.
+### 5. Run the two processes
 
 ```bash
-# Basic run — fetches 5 threads, picks the best one, generates a reply
-python cli.py --agent negotiate
-
-# Verbose logging — see pre-filter decisions and LLM classifications
-python cli.py --agent negotiate -v
-
-# Fetch more threads (default: 5)
-python cli.py --agent negotiate --max-threads 10
-
-# Show the browser while it reads the inbox
-python cli.py --agent negotiate --no-headless
+make worker   # drains the queue and drives the browser — run where you're logged in
+make api      # dashboard on http://127.0.0.1:8000
 ```
 
-python cli.py --agent negotiate                          # single cycle, review mode
-python cli.py --agent negotiate --agent-schedule         # loop every 5h
-python cli.py --agent negotiate --auto-send              # send without review
-python cli.py --agent outreach --locations "Goa, India"  # AI-generated first messages
-python cli.py --agent both --locations "Goa, India"      # negotiate + outreach
-python cli.py --agent both --schedule
+The API never touches Playwright. It only writes rows to the `jobs` table; the worker is the sole owner of the browser session. That separation is what stops a ten-minute scrape from blocking the dashboard.
 
-**How it works (single-thread focused flow):**
+---
 
-1. **Fetch** — Opens your Airbnb inbox and scrapes the first N threads (messages, host name, booking status, location).
-2. **Pre-filter** — Locally skips threads that don't need a reply:
-   - Last message is from you → you're already awaiting a host reply
-   - Booking status is dead (`invite expired`, `dates not available`, `declined`, `cancelled`, `withdrawn`)
-   - Empty conversation
-3. **Classify (LLM)** — For surviving candidates, the AI decides: is there a real **chance** to negotiate, or is it a straight **no**?
-4. **Pick one** — Selects the single best thread (freshest conversation).
-5. **Generate reply** — Crafts a negotiation message tailored to the conversation context.
-6. **Present** — Prints the reply for your review.
+## Daily use
 
-> The agent requires a valid Airbnb login session (same persistent browser profile as outreach). Log in once via the web UI or CDP before running.
+```bash
+make brief      # what happened, what needs you
+make status     # queue depth + sends left in the window
+make tick       # plan a round of work right now
 
-**Example output:**
-```
-📥 Fetching first 5 inbox thread(s)…
-🔎 Pre-filtering 5 thread(s)…
-   ⏭️  Shaivy (#123): SKIP — awaiting host reply
-   ⏭️  Ritu (#456):   SKIP — dead status 'dates are not available'
-   ✅ Kumar (#789):   candidate (last_sender=host, status='invited to book')
-🔍 Classifying 1 candidate(s) with LLM…
-   ❌ Kumar → NO CHANCE: Host said "only paid reservations"
-✅ No reply needed — all threads are either awaiting or not negotiable.
+python manage.py itinerary   # the route the Router planned
+python manage.py sync        # queue an inbox sync
 ```
 
-**Important:** You must log in to Airbnb **once** before using the CLI for outreach. Either:
-- Use the web UI (`python run.py` → click "🔐 Login to Airbnb"), or
-- Start Chrome with `--remote-debugging-port` and set `CHROME_CDP_URL` in `.env` (see `.env.example`)
+`make brief` output:
 
-The CLI reuses the same persistent browser profile as the web UI.
+```
+  Closes / 100 messages : 12.5
+  Reply rate            : 31.2%
+  Messages sent         : 32
+  Sends left in window  : 3/5
 
-#### CLI Options
+  READY TO BOOK (2) — needs your card
+    · Asha — Sea Breeze Villa (2026-11 → 2026-12)
+    · Ravi — Hill Hut (window TBC)
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--locations` | One or more Airbnb locations (optional if `locations.md` or `--locations-file`) | — |
-| `--locations-file` | Markdown/text file: one location per non-comment line | — |
-| `--invites` | Outreach invites per location | 3 |
-| `--schedule` | Repeat every 4 hours | off |
-| `--interval` | Custom schedule interval in seconds | 14400 (4h) |
-| `--date-mode` | `flexible` (trip length) or `fixed` (calendar dates) | `flexible` |
-| `--flex-duration` | Trip length in flexible mode | `1` |
-| `--flex-duration-unit` | `weekend`, `day` (nights), `week`, or `month` | `week` |
-| `--flex-trip-months` | Months in `flexible_trip_dates[]` (1–12); default from env | env / `3` |
-| `--checkin` | Fixed mode: check-in (YYYY-MM-DD) | — |
-| `--checkout` | Fixed mode: check-out (YYYY-MM-DD) | — |
-| `--guests` | Number of guests | 2 |
-| `--min-price` | Minimum price per night | — |
-| `--max-price` | Maximum price per night | — |
-| `--message` | Custom message template | Built-in |
-| `--dry-run` | Scrape only, skip outreach | off |
-| `--no-headless` | Show the browser (default is headless) | off |
-| `-v, --verbose` | Debug logging | off |
-| **Agent mode** | | |
-| `--agent negotiate` | Run the AI negotiation agent instead of outreach | — |
-| `--max-threads` | Max inbox threads for the agent to fetch | 5 |
-| `--auto-send` | Auto-send the generated reply (not yet wired) | off |
+  NEEDS A HUMAN (1)
+    · Meera — [price_ceiling] agrees to 8000 per night but only free stays…
 
-That's it! The landing page lets you enter a location and optional preferences (dates, guests, price range). Hit search, and the app scrapes Airbnb and shows you the results.
+  ALERTS
+    ! The Warden blocked 1 draft(s) in the last 24h.
+```
 
-## 📋 How It Works
+---
 
-1. **Enter a location** on the landing page (e.g., "Goa, India")
-2. **Add optional preferences** — flexible trip length (nights / weeks / months) or fixed check-in/out, plus guests and price range
-3. **Hit Search** — the app scrapes Airbnb listings matching your criteria
-4. **View results** — listings are saved to the database and displayed in the UI
-5. **Login to Airbnb** — click "🔐 Login to Airbnb" (one-time step, session is saved)
-6. **Start Outreach** — click the outreach button to send personalized messages to all hosts
-7. **Track progress** — watch messages get sent in real-time on the outreach status page
+## 🛡 Guardrails
 
-### 📨 Outreach Flow
+The agents send without asking you. So the rules live in **code**, not in the prompt — a system prompt saying "never promise specific dates" is a suggestion a model can talk itself out of. The Warden reviews the **final text** after generation and either allows it or blocks it.
 
-The outreach system automates sending personalized messages to Airbnb hosts:
+A blocked draft parks its deal in `needs_human` and shows up on the dashboard. It fires if the message would:
 
-1. **Login first** — click **"🔐 Login to Airbnb"** in the navbar or on the results page. A browser opens; log in normally (email, Google, Apple — all work). Your session is saved in a persistent browser profile (`data/airbnb_browser_profile/`).
-2. **Start outreach** — click **"🚀 Start Outreach"** on the results page. The app reuses your saved session — no login prompt during messaging.
-3. The app visits each listing, clicks "Contact Host", types your personalized message, and sends it.
-4. Track sent/pending/failed status in real-time.
+| Rule | Example that gets blocked |
+|---|---|
+| Exceed your per-night ceiling | "I'd be happy to pay ₹8000 per night" |
+| Commit to specific dates | "Let's lock in Dec 12 to Dec 19" |
+| Over-promise deliverables | "I'll make 10 reels for you" |
+| Leak contact details | "Call me on 9876543210" |
+| Move off-platform | "Let's do a direct booking over WhatsApp" |
+| Inflate your reach | "I have 500k followers" |
+| Exceed the per-thread reply cap | a 5th agent reply on one conversation |
 
-> **Why a separate login step?** Airbnb blocks automated logins. By logging in once in a dedicated browser, your session persists on disk. The **search** and **outreach** steps share the same Playwright session (see `app/browser_session.py`); a backup copy of cookies is also written to `data/browser_state.json` after a successful login.
+Quoting a host's price back to them is **not** a violation — the price rule only fires in a committing context ("pay", "agree", "happy to"). The Warden never rewrites a draft; it allows or refuses.
 
-**If login never “sticks” or search opens a blank logged-out browser:** (1) Use **`PLAYWRIGHT_CHANNEL=chrome`** and `playwright install chrome`. (2) **Or** use **CDP**: start Chrome with `--remote-debugging-port` and a dedicated `--user-data-dir`, log in to Airbnb in that window, leave Chrome open, and set `CHROME_CDP_URL` in `.env` so the app attaches to *your* browser instead of launching a new one. Full steps are in `.env.example`.
+Set the values in `.env` (seeds the policy on first run) or change them live:
 
-The default message introduces you as a content creator offering to create content in exchange for stays. You can customize the message template from the UI before starting outreach.
+```bash
+curl -X POST localhost:8000/api/policy \
+  -H 'content-type: application/json' \
+  -d '{"max_price_per_night": 2500, "max_agent_replies_per_thread": 3}'
+```
+
+### Kill switch
+
+One flag freezes every outbound message. The worker re-reads it immediately before each send, and again *after* the rate-limit wait — which can last hours — so a freeze takes effect mid-run.
+
+```bash
+make freeze     # or: python manage.py freeze --reason "account looks flagged"
+make resume
+```
+
+---
+
+## 🐢 Send budget
+
+Airbnb blocks bulk messaging. v1 only counted first-touch outreach, so auto-sending negotiation replies would have silently doubled the real rate against an unchanged cap.
+
+In v2 **outreach and negotiation share one sliding window**. Negotiation isn't exempt — it just gets higher queue priority, because a warm thread is worth far more than a cold message. Defaults: **5 sends per 3 hours**, with ~120s spacing and jitter between attempts.
+
+Two consequences worth knowing:
+
+- The **Planner applies backpressure** — it won't queue sends it has no budget to deliver. Queueing a hundred against a five-send window just hides the constraint.
+- Because volume is capped, the dashboard leads with **deals closed per 100 messages**. The only way to improve is to convert better: research harder, score more selectively, write a better message.
+
+If Airbnb shows its in-app limit banner, outreach stops, marks the rest skipped, and moves on.
+
+Tune with `OUTREACH_MAX_SENDS_PER_WINDOW`, `OUTREACH_RATE_WINDOW_SECONDS`, and `OUTREACH_INTER_MESSAGE_DELAY_SECONDS`.
+
+---
 
 ## 🏗 Project Structure
 
 ```
 airbnb-automate/
-├── Makefile                # make up / make down — start or stop the web UI
-├── locations.md            # Optional: one location per line (CLI + UI hints)
-├── run.py                  # Entry point — web UI
-├── cli.py                  # Entry point — CLI with scheduler + agent mode
-├── requirements.txt        # Python dependencies
-├── .env.example            # Environment variables template
+├── manage.py               # Entry point — login / campaign / worker / api / brief / freeze
+├── Makefile                # make login / api / worker / brief / status / freeze / test
+├── locations.md            # One destination per line
 │
-├── app/                    # Core application
-│   ├── config.py           # Configuration (DB path, message template)
-│   ├── models.py           # Data models (Search, Listing, OutreachMessage)
-│   ├── database.py         # SQLite database layer
-│   ├── browser_session.py  # Shared Playwright session (search + login + outreach)
-│   ├── locations_md.py     # Read locations.md (one place per line)
-│   ├── scraper.py          # Airbnb scraper (Playwright)
-│   ├── outreach.py         # Host outreach automation (Playwright)
-│   ├── devctl.py           # Background start/stop for `make up` / `make down`
+├── app/
+│   ├── worker.py           # Leases jobs, dispatches them, owns the browser
+│   ├── jobs.py             # Durable queue: enqueue / lease / retry / idempotency
+│   ├── warden.py           # Deterministic guardrail validator
+│   ├── policy.py           # Guardrail config + kill switch (DB-backed, live)
+│   ├── send_budget.py      # One shared send window for every channel
 │   │
-│   └── agent/              # AI negotiation agent
-│       ├── llm.py          # LLM provider abstraction (Gemini / OpenAI / Perplexity)
-│       ├── prompts.py      # System + human prompt templates
-│       ├── chat_reader.py  # Scrape inbox threads & messages via Playwright
-│       └── negotiator.py   # LangGraph workflow (fetch → filter → classify → reply)
+│   ├── deals.py            # Deal repo + state machine + message log
+│   ├── leads.py            # Lead repo: enrichment + collab-fit score
+│   ├── territories.py      # Places, research profiles, saturation counters
+│   ├── campaigns.py        # Campaign goals and planned itineraries
+│   │
+│   ├── inbox.py            # Inbox sync + in-thread replies
+│   ├── thread_linking.py   # Links a sent message to the thread it became
+│   ├── listing_detail.py   # Detail-page scrape (the "public context")
+│   ├── scraper.py          # Search-results scrape
+│   ├── outreach.py         # Airbnb login + listing-page messaging (Playwright)
+│   ├── browser_session.py  # Persistent Chrome profile / CDP attach
+│   ├── database.py         # SQLite layer
+│   ├── models.py           # Deal, Lead, Job, Territory, Campaign, …
+│   ├── config.py           # Env configuration
+│   │
+│   ├── migrations/         # Numbered SQL, applied in order and recorded
+│   │   └── sql/            # 0001 baseline · 0002 agent office · 0003 backfill · 0004 drop legacy
+│   │
+│   ├── agent/
+│   │   ├── planner.py      # Decomposes goals into jobs
+│   │   ├── scout.py        # Destination research
+│   │   ├── router.py       # Route + month assignment
+│   │   ├── analyst.py      # Lead scoring
+│   │   ├── scribe.py       # Opening messages
+│   │   ├── closer.py       # Negotiation + terms extraction
+│   │   ├── chronicler.py   # Brief, funnel, north-star metric
+│   │   ├── prompts_v2.py   # Prompts built from the policy fact sheet
+│   │   ├── runs.py         # Token / cost / latency ledger
+│   │   ├── llm.py          # Provider abstraction (Gemini / OpenAI / Perplexity)
+│   │   └── chat_reader.py  # Inbox scraping
+│   │
+│   └── api/
+│       ├── main.py         # FastAPI routes
+│       └── dashboard.py    # Server-rendered dashboard
 │
-├── web/                    # Flask web app
-│   ├── app.py              # Routes (home, search, results, outreach)
-│   ├── static/style.css    # Styles
-│   └── templates/          # HTML templates
-│       ├── base.html
-│       ├── home.html
-│       ├── results.html
-│       └── outreach.html
-│
-├── data/                   # Runtime data (gitignored)
-│   ├── airbnb_automate.db  # SQLite database
-│   ├── browser_state.json  # Cookie backup
-│   ├── web.pid / web.log   # PID + log from `make up`
-│   └── airbnb_browser_profile/  # Persistent Chrome profile
-│
-└── tests/                  # Test suite
-    ├── test_database.py
-    ├── test_cli.py
-    └── test_scraper.py
+├── data/                   # Runtime data (gitignored) — DB, Chrome profile, logs
+└── tests/                  # Includes a Warden red-team corpus and an e2e walk
 ```
 
-## 📍 `locations.md` (batch locations)
+---
 
-Put **one location per line** in the project root `locations.md` (lines starting with `#` are comments).
+## 📍 `locations.md`
 
-- **CLI:** If you don’t pass `--locations`, the CLI automatically loads `locations.md` when that file exists. You can also pass `--locations-file path/to/file.md` to merge file lines with `--locations`.
-- **Web UI:** The home page reads `locations.md` and offers those lines as **datalist suggestions** for the location field.
+One destination per line in the project root; lines starting with `#` are comments.
+`manage.py campaign` reads it when you don't pass `--places` / `--places-file`.
 
-## 🔗 Flexible search URLs (week / month / weekend)
+These are only *candidates* — the Scout researches each one and the Router decides which actually make the itinerary, and in which month.
 
-Flexible searches use Airbnb-style **structured** query params (like the explore UI): `refinement_paths[]`, `flexible_trip_dates[]` (lowercase English months), `monthly_start_date` / `monthly_length` / `monthly_end_date`, `flexible_trip_lengths[]` (`one_week`, `one_month`, `weekend_trip`), and `price_filter_num_nights`. The path slug follows **“City, Region” → `City--Region`**. Set **`AIRBNB_BASE_URL`** (e.g. `https://www.airbnb.co.in`) and **`FLEX_TRIP_MONTHS_COUNT`** in `.env` to tune defaults.
+---
 
-## 🐢 Host messaging rate limits
+## 🔗 Flexible search URLs
 
-Airbnb blocks bulk messaging (“you’ve already messaged several hosts today…”). This app:
+Flexible searches use Airbnb's **structured** explore params: `refinement_paths[]`, `flexible_trip_dates[]` (lowercase English months), `monthly_start_date` / `monthly_length` / `monthly_end_date`, `flexible_trip_lengths[]` (`one_week`, `one_month`, `weekend_trip`), and `price_filter_num_nights`. Path slugs follow **“City, Region” → `City--Region`**. Tune with **`AIRBNB_BASE_URL`** (e.g. `https://www.airbnb.co.in`) and **`FLEX_TRIP_MONTHS_COUNT`**.
 
-1. **Sliding window** — By default at most **5 successful sends per 3 hours** (across *all* locations and runs), stored in SQLite (`outreach_send_log`). If you hit the cap, outreach **waits** until a slot frees up (good for scheduled CLI runs in the background).
-2. **Spacing** — Default **120 seconds** between each attempt so five sends are spread out instead of instant.
-3. **Stop on Airbnb UI** — If Airbnb shows the in-app limit banner, outreach **stops**, marks remaining invites as skipped, and the CLI **skips later locations** in the same cycle.
+---
 
-Tune with `OUTREACH_MAX_SENDS_PER_WINDOW`, `OUTREACH_RATE_WINDOW_SECONDS`, and `OUTREACH_INTER_MESSAGE_DELAY_SECONDS` (see `.env.example`).
+## ⚙️ Configuration
 
-## ⚙️ Environment Variables
+### Guardrails
+
+These seed the `policy` table on first run. After that the dashboard is the source of truth, and changes apply **without restarting the worker**.
 
 | Variable | Description | Default |
-|----------|-------------|---------|
-| `FLASK_PORT` | App port | 5000 |
-| `FLASK_DEBUG` | Debug mode | false |
-| `FLASK_SECRET_KEY` | Session secret | dev-secret-key |
-| `DATABASE_PATH` | SQLite DB path | data/airbnb_automate.db |
+|---|---|---|
+| `MAX_PRICE_PER_NIGHT` | Most an agent may agree to pay. `0` = free stays only; any paid counter-offer is escalated to you | `0` |
+| `PRICE_CEILING_CURRENCY` | Currency the ceiling is in | `INR` |
+| `ALLOWED_DELIVERABLES` | Comma-separated. The number in each entry is the cap, so "2 Instagram reels" blocks a draft offering three | 2 reels, 10 photos, 1 review, stories |
+| `MAX_AGENT_REPLIES_PER_THREAD` | Replies one thread may get before it is parked for you | `4` |
+| `CREATOR_NAME` / `CREATOR_ROLE` | Who the agent says you are | Sachin / founder, The Boring Education |
+| `CREATOR_FOLLOWERS` | The largest reach claim permitted | `150k+ combined` |
+| `CREATOR_HANDLES` | The only handles an agent may name | `@theboringfounder, @theboringeducation` |
+
+### Rate limiting
+
+| Variable | Description | Default |
+|---|---|---|
+| `OUTREACH_MAX_SENDS_PER_WINDOW` | Shared cap across outreach **and** negotiation | `5` |
+| `OUTREACH_RATE_WINDOW_SECONDS` | Sliding window length | `10800` (3h) |
+| `OUTREACH_INTER_MESSAGE_DELAY_SECONDS` | Minimum pause between attempts | `120` |
+
+### Browser & search
+
+| Variable | Description | Default |
+|---|---|---|
+| `DATABASE_PATH` | SQLite path | `data/airbnb_automate.db` |
 | `AIRBNB_BASE_URL` | Origin for search URLs | `https://www.airbnb.com` |
 | `FLEX_TRIP_MONTHS_COUNT` | Consecutive months in `flexible_trip_dates[]` | `3` |
-| `HEADLESS` | Run browser headless (scraping only) | true |
-| `PLAYWRIGHT_CHANNEL` | Use installed `chrome` or `msedge` instead of bundled Chromium (helps if OAuth login fails) | (bundled Chromium) |
-| `BROWSER_USER_DATA_DIR` | Persistent profile path for login sessions; set to `none` to disable | `data/airbnb_browser_profile` |
-| `BROWSER_USER_AGENT` | Force a custom User-Agent (rarely needed) | (browser default) |
-| `OUTREACH_MESSAGE` | Custom outreach message template | Built-in template |
-| `OUTREACH_MAX_SENDS_PER_WINDOW` | Max successful messages per sliding window (global) | `5` |
-| `OUTREACH_RATE_WINDOW_SECONDS` | Sliding window length in seconds | `10800` (3h) |
-| `OUTREACH_INTER_MESSAGE_DELAY_SECONDS` | Minimum pause between each send attempt | `120` |
-| **Agent / LLM** | | |
-| `LLM_PROVIDER` | LLM provider: `gemini`, `openai`, or `perplexity` | `gemini` |
-| `LLM_TEMPERATURE` | LLM temperature | `0.7` |
-| `GOOGLE_API_KEY` | Google Gemini API key (required for `gemini` provider) | — |
-| `GEMINI_MODEL` | Gemini model name | `gemini-2.5-flash` |
-| `OPENAI_API_KEY` | OpenAI API key (for `openai` provider) | — |
-| `OPENAI_MODEL` | OpenAI model name | `gpt-4o-mini` |
-| `PERPLEXITY_API_KEY` | Perplexity API key (for `perplexity` provider) | — |
-| `PERPLEXITY_MODEL` | Perplexity model name | `sonar-pro` |
-| `AGENT_SCHEDULE_HOURS` | How often the negotiation agent runs in scheduled mode | `5` |
+| `HEADLESS` | Run the browser headless | `true` |
+| `PLAYWRIGHT_CHANNEL` | Use installed `chrome` / `msedge` — fixes OAuth login | bundled Chromium |
+| `BROWSER_USER_DATA_DIR` | Persistent profile path; `none` to disable | `data/airbnb_browser_profile` |
+| `CHROME_CDP_URL` | Attach to your own running Chrome instead of launching one | — |
+| `BROWSER_USER_AGENT` | Force a custom User-Agent (rarely needed) | browser default |
+
+### LLM
+
+| Variable | Description | Default |
+|---|---|---|
+| `LLM_PROVIDER` | `gemini`, `openai`, or `perplexity` | `gemini` |
+| `LLM_TEMPERATURE` | Sampling temperature | `0.7` |
+| `GOOGLE_API_KEY` / `GEMINI_MODEL` | Gemini credentials | — / `gemini-2.5-flash` |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | OpenAI credentials | — / `gpt-4o-mini` |
+| `PERPLEXITY_API_KEY` / `PERPLEXITY_MODEL` | Perplexity credentials | — / `sonar-pro` |
+
+Every LLM call is logged to `agent_runs` with tokens, latency and cost, attributed to an agent, a prompt version and a deal. The dashboard shows spend per agent and **reply rate per prompt version** — the highest-leverage thing to tune once you have volume.
+
+---
 
 ## 🧪 Testing
 
 ```bash
-pip install pytest
-python -m pytest tests/ -v
+pip install -r requirements-test.txt
+make test          # or: python -m pytest tests/ -q
 ```
+
+Worth knowing what's covered, because this system messages real people as you:
+
+- **Warden red team** — adversarial drafts that leak a phone number, promise "Dec 12", offer ₹9000/night or claim 500k followers must all be blocked.
+- **Idempotency** — a retried send job produces exactly one message and consumes exactly one budget slot.
+- **Shared budget** — outreach and negotiation interleaved never exceed the window.
+- **Kill switch** — flipping it mid-run stops the next send at two independent layers.
+- **State machine** — illegal transitions are refused and leave no event behind.
+- **End to end** — one deal walks `discovered → ready_to_book` with every LLM and browser call mocked.
+
+---
 
 ## ⚠️ Notes
 
-- **Airbnb ToS**: Automated scraping and messaging may violate Airbnb's Terms of Service. Use responsibly.
-- **Browser Required**: The scraper uses Playwright with Chromium. Run `playwright install chromium` after installing dependencies.
-- **Login Required for Outreach**: Click **"Login to Airbnb"** in the web UI before starting outreach. The app stores your session in a persistent browser profile at `data/airbnb_browser_profile/`. If Google/Apple OAuth does not work in the bundled Chromium, set `PLAYWRIGHT_CHANNEL=chrome` in `.env` to use your installed Google Chrome instead.
+- **Airbnb ToS** — automated scraping and messaging may violate Airbnb's Terms of Service. You are messaging real hosts as yourself; keep the volume honest and the claims true. The credential fact sheet exists so an agent cannot overstate your reach on your behalf.
+- **Login required** — the worker cannot log in for you. Run `make login` once; the session lives in `data/airbnb_browser_profile/`. If Google/Apple OAuth fails in bundled Chromium, set `PLAYWRIGHT_CHANNEL=chrome`.
+- **No push notifications** — the dashboard is the only place a problem surfaces, so the brief leads with the two queues that need you and raises an anomaly banner when the system has gone unexpectedly quiet.
+- **Cloud** — running this on a server needs a persistent VM, a headful browser under Xvfb, a residential India exit IP, an encrypted profile volume and a one-time remote login handoff. That's a separate project; the code is written to be liftable (all paths from config, browser confined to the worker) but the deployment is not built.
+
