@@ -119,7 +119,8 @@ def prepare_outreach(
     verdict = warden_review(text, deal=deal, policy=active, db_path=db_path)
     if not verdict.allowed:
         deal_repo.mark_message_blocked(message_id, verdict.reason, db_path)
-        deal_repo.escalate(deal_id, verdict.reason, db_path=db_path)
+        if not verdict.is_operational_only:
+            deal_repo.escalate(deal_id, verdict.reason, db_path=db_path)
         return {
             "deal_id": deal_id,
             "message_id": message_id,

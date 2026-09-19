@@ -339,6 +339,61 @@ def test_dashboard_renders(client):
     assert "Closes / 100 msgs" in response.text
 
 
+def test_dashboard_offers_a_campaign_form_when_there_are_none(client):
+    """With no campaign, the UI must lead with the thing that creates one."""
+    body = client.get("/").text
+    assert "Create campaign &amp; start work" in body
+    assert "Destinations to consider" in body
+
+
+def test_dashboard_shows_activity_and_controls(client):
+    import logging
+
+    from app.logging_config import setup_logging
+
+    setup_logging()
+    logging.getLogger("app.agent.scout").info("Scouting Goa, India")
+
+    body = client.get("/").text
+    assert "Scouting Goa, India" in body
+    assert "Freeze sending" in body
+    assert "Live activity" in body.replace("LIVE ACTIVITY", "Live activity")
+
+
+def test_activity_endpoint_returns_app_logs_only(client):
+    import logging
+
+    from app.logging_config import setup_logging
+
+    setup_logging()
+    logging.getLogger("app.worker").info("worker says hello")
+    logging.getLogger("httpx").info("library noise")
+
+    messages = [r["message"] for r in client.get("/api/activity").json()]
+    assert "worker says hello" in messages
+    assert "library noise" not in messages
+
+
+def test_creating_a_campaign_from_the_ui_queues_work(client):
+    body = client.post(
+        "/api/campaigns",
+        json={
+            "name": "Winter tour",
+            "window_start": "2026-11",
+            "window_end": "2027-02",
+            "places": ["Goa, India", "Gokarna, Karnataka"],
+        },
+    ).json()
+    assert body["territories"] == 2
+    assert body["queued"] >= 2  # research jobs for each place
+
+
+def test_campaign_without_places_falls_back_to_locations_file(client):
+    """The form is allowed to be left empty; locations.md is the default."""
+    body = client.post("/api/campaigns", json={"name": "Fallback"}).json()
+    assert body["campaign_id"]
+
+
 def test_brief_endpoint(client):
     assert client.get("/api/brief").status_code == 200
 

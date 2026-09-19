@@ -108,34 +108,47 @@ If the login never "sticks" or the browser opens logged out:
    `CHROME_CDP_URL` in `.env` so the app attaches to *your* browser instead of
    launching one.
 
-### 4. Start a campaign
+### 4. Run it
 
 ```bash
-# Destinations come from locations.md unless you pass --places / --places-file
-python manage.py campaign "Winter tour" \
-    --window 2026-11 2027-02 --origin "Delhi" --nights 7
+make start
 ```
 
-### 5. Run the two processes
+That's the whole thing. It runs the API and the worker together and opens the
+dashboard at <http://127.0.0.1:8000>, where you create the campaign and watch
+progress. Ctrl+C stops both.
 
-```bash
-make worker   # drains the queue and drives the browser — run where you're logged in
-make api      # dashboard on http://127.0.0.1:8000
-```
+The worker is still the only thing that touches the browser — the API just
+writes rows to the `jobs` table. They share an event loop locally; run them as
+separate processes with `make api` and `make worker` when the worker needs to
+live somewhere else.
 
-The API never touches Playwright. It only writes rows to the `jobs` table; the worker is the sole owner of the browser session. That separation is what stops a ten-minute scrape from blocking the dashboard.
+### 5. Create a campaign in the UI
+
+Fill in the name, your starting city, the months you're free, and the
+destinations to consider (pre-filled from [locations.md](locations.md)). Hit
+**Create campaign & start work** and the Planner takes over.
+
+Everything after that is on the page: live agent activity, the pipeline funnel,
+what's ready to book, what needs you, the job queue, and LLM spend. It refreshes
+every 10 seconds.
 
 ---
 
 ## Daily use
 
+Open the dashboard. The buttons cover the common actions — freeze/resume
+sending, sync the inbox, plan work now.
+
+If you prefer the terminal:
+
 ```bash
 make brief      # what happened, what needs you
 make status     # queue depth + sends left in the window
-make tick       # plan a round of work right now
+make freeze     # panic button — takes effect mid-run
+make resume
 
 python manage.py itinerary   # the route the Router planned
-python manage.py sync        # queue an inbox sync
 ```
 
 `make brief` output:
@@ -217,8 +230,8 @@ Tune with `OUTREACH_MAX_SENDS_PER_WINDOW`, `OUTREACH_RATE_WINDOW_SECONDS`, and `
 
 ```
 airbnb-automate/
-├── manage.py               # Entry point — login / campaign / worker / api / brief / freeze
-├── Makefile                # make login / api / worker / brief / status / freeze / test
+├── manage.py               # Entry point — `start` runs everything; login / brief / freeze
+├── Makefile                # make start / login / brief / status / freeze / test
 ├── locations.md            # One destination per line
 │
 ├── app/
@@ -227,6 +240,7 @@ airbnb-automate/
 │   ├── warden.py           # Deterministic guardrail validator
 │   ├── policy.py           # Guardrail config + kill switch (DB-backed, live)
 │   ├── send_budget.py      # One shared send window for every channel
+│   ├── logging_config.py   # Readable console output + the UI activity feed
 │   │
 │   ├── deals.py            # Deal repo + state machine + message log
 │   ├── leads.py            # Lead repo: enrichment + collab-fit score
@@ -272,6 +286,7 @@ airbnb-automate/
 ## 📍 `locations.md`
 
 One destination per line in the project root; lines starting with `#` are comments.
+The campaign form in the dashboard pre-fills from this file, and
 `manage.py campaign` reads it when you don't pass `--places` / `--places-file`.
 
 These are only *candidates* — the Scout researches each one and the Router decides which actually make the itinerary, and in which month.

@@ -347,9 +347,9 @@ def main(
     once: bool = False,
 ) -> None:
     """Run a worker until interrupted."""
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    from app.logging_config import setup_logging
+
+    setup_logging()
     init_db(db_path)
     worker = Worker(campaign_id=campaign_id, headless=headless, db_path=db_path)
 

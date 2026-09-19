@@ -66,6 +66,18 @@ class Verdict:
         """Every violation, joined — what goes on the blocked message row."""
         return "; ".join(str(v) for v in self.violations)
 
+    @property
+    def is_operational_only(self) -> bool:
+        """True when sending is merely paused, not when the draft is unsafe.
+
+        A frozen kill switch says nothing about the message, so the deal must
+        stay where it is and be retried once sending resumes — escalating it to
+        NEEDS_HUMAN would strand it in a state it cannot come back from.
+        """
+        return bool(self.violations) and all(
+            v.rule == Rule.KILL_SWITCH for v in self.violations
+        )
+
     def __bool__(self) -> bool:
         return self.allowed
 

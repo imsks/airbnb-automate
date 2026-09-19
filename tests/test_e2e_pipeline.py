@@ -304,11 +304,51 @@ def test_kill_switch_mid_campaign_stops_the_next_send(db):
     assert "kill_switch" in result["reason"]
     assert send.await_count == 0
 
-    # The draft is kept, and the deal is parked for a human rather than lost.
+    # The draft is kept and the deal stays where it was: a frozen switch is an
+    # operational pause, so this must resume cleanly rather than need a human.
     deal = deal_repo.get_deal(result["deal_id"], db)
-    assert deal.state is DealState.NEEDS_HUMAN
+    assert deal.state is DealState.DISCOVERED
     assert deal_repo.get_messages(deal.id, db)[0].status is MessageStatus.BLOCKED
 
     from app.send_budget import budget_status
 
     assert budget_status(db)["used"] == 0
+
+
+def test_a_frozen_dry_run_resumes_cleanly(db):
+    """Freeze, let the pipeline draft everything, then resume and send."""
+    from app import policy as policy_mod
+    from app.agent.scribe import send_outreach_for_lead
+
+    _seed_listing(db)
+    lead_id = lead_repo.upsert_lead("L1", db_path=db)
+    lead_repo.save_enrichment(lead_id, {"description": "x"}, db_path=db)
+
+    send = AsyncMock(return_value=("T900", ""))
+    patches = lambda: (
+        patch("app.agent.scribe.get_llm", return_value=_llm(_OUTREACH_TEXT)),
+        patch("app.outreach._send_message_to_host", send),
+        patch(
+            "app.agent.scribe.open_airbnb_browser",
+            AsyncMock(return_value=(MagicMock(), MagicMock(), None, False)),
+        ),
+        patch("app.agent.scribe.close_airbnb_session", AsyncMock()),
+    )
+
+    policy_mod.freeze_sending("dry run", db)
+    p = patches()
+    with p[0], p[1], p[2], p[3]:
+        dry = asyncio.run(send_outreach_for_lead(lead_id, db_path=db))
+    assert dry["status"] == "blocked"
+    assert send.await_count == 0
+
+    policy_mod.resume_sending(db)
+    p = patches()
+    with p[0], p[1], p[2], p[3]:
+        live = asyncio.run(send_outreach_for_lead(lead_id, db_path=db))
+
+    assert live["status"] == "sent"
+    assert send.await_count == 1
+    deal = deal_repo.get_deal(live["deal_id"], db)
+    assert deal.state is DealState.CONTACTED
+    assert deal_repo.get_messages(deal.id, db)[0].status is MessageStatus.SENT

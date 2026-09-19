@@ -289,6 +289,23 @@ def test_kill_switch_blocks_an_otherwise_clean_draft(db, pol):
     assert Rule.KILL_SWITCH in _rules(verdict)
 
 
+def test_kill_switch_alone_is_operational_not_a_content_problem(db, pol):
+    """A frozen switch says nothing about the draft, so the deal must not be
+    escalated \u2014 it should retry once sending resumes."""
+    policy_mod.freeze_sending("testing")
+    assert warden.review(CLEAN_DRAFT, policy=pol).is_operational_only is True
+
+
+def test_kill_switch_plus_a_real_violation_is_not_operational_only(db, pol):
+    policy_mod.freeze_sending("testing")
+    verdict = warden.review("Call me on 9876543210.", policy=pol)
+    assert verdict.is_operational_only is False
+
+
+def test_a_clean_allowed_draft_is_not_operational_only(pol):
+    assert _review(CLEAN_DRAFT, pol).is_operational_only is False
+
+
 def test_clean_draft_passes_once_sending_resumes(db, pol):
     policy_mod.freeze_sending()
     policy_mod.resume_sending()

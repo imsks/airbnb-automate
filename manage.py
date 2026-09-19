@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Airbnb Automate — campaign control.
+"""Airbnb Automate — control surface.
 
-    python manage.py login                  # sign in to Airbnb once, by hand
-    python manage.py campaign "Winter tour" --window 2026-11 2027-02 \\
-                     --places-file locations.md --origin "Delhi"
-    python manage.py worker                 # drain the queue (needs a login)
-    python manage.py api                    # dashboard on :8000
-    python manage.py tick                   # plan one round of work now
-    python manage.py brief                  # print today's brief
-    python manage.py freeze / resume        # the kill switch
+Normal use is two commands:
+
+    python manage.py login      # sign in to Airbnb once, by hand
+    python manage.py start      # everything else, with a dashboard
+
+`start` runs the API and the worker together and opens the UI, where you create
+campaigns and watch progress. The rest of the commands below are for when you
+want a single piece on its own — separate processes, a one-off tick, scripting.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.agent.chronicler import daily_brief
 from app.database import init_db
 from app.jobs import JobType, Priority
 from app.locations_md import project_locations_md, read_locations_md
+from app.logging_config import setup_logging
 from app.models import Campaign, CampaignStatus
 from app.send_budget import budget_status
 
@@ -46,6 +47,56 @@ def _resolve_places(args) -> list[str]:
             seen.add(place)
             unique.append(place)
     return unique
+
+
+def cmd_start(args) -> int:
+    """Run the API and the worker in one process, then open the dashboard.
+
+    They share an event loop, which is safe because the worker is still the
+    only thing that touches Playwright — the API just writes rows to `jobs`.
+    Split them with `api` and `worker` when you want separate processes.
+    """
+    import asyncio
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from app.api.main import create_app
+    from app.outreach import check_airbnb_login_status_sync
+    from app.worker import Worker
+
+    url = f"http://{args.host}:{args.port}"
+
+    if not args.skip_login_check and not check_airbnb_login_status_sync():
+        print("\n  Not signed in to Airbnb. Run `python manage.py login` first,")
+        print("  or pass --skip-login-check to start anyway.\n")
+        return 1
+
+    worker = Worker(campaign_id=args.campaign, headless=not args.no_headless)
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(), host=args.host, port=args.port, log_level="warning")
+    )
+
+    async def run_both() -> None:
+        worker_task = asyncio.create_task(worker.run())
+        try:
+            await server.serve()
+        finally:
+            worker.stop()
+            await asyncio.wait_for(worker_task, timeout=30)
+
+    if not args.no_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+
+    print(f"\n  Dashboard  {url}")
+    print("  Worker     running — create a campaign in the UI to give it work")
+    print("  Stop       Ctrl+C\n")
+    try:
+        asyncio.run(run_both())
+    except KeyboardInterrupt:
+        pass
+    return 0
 
 
 def cmd_login(args) -> int:
@@ -190,6 +241,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    start = sub.add_parser("start", help="run everything and open the dashboard")
+    start.add_argument("--campaign", type=int, default=0)
+    start.add_argument("--host", default="127.0.0.1")
+    start.add_argument("--port", type=int, default=8000)
+    start.add_argument("--no-browser", action="store_true", help="don't open a tab")
+    start.add_argument("--no-headless", action="store_true", help="show the browser")
+    start.add_argument(
+        "--skip-login-check", action="store_true", help="start without an Airbnb session"
+    )
+    start.set_defaults(func=cmd_start)
+
     sub.add_parser("login", help="sign in to Airbnb once (opens a browser)").set_defaults(
         func=cmd_login
     )
@@ -243,10 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    setup_logging(args.verbose)
     init_db()
     return args.func(args)
 

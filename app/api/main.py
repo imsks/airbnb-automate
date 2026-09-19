@@ -8,6 +8,7 @@ the API stay responsive while a scrape runs for minutes.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -22,6 +23,8 @@ from app.agent.chronicler import daily_brief
 from app.api.dashboard import render_dashboard
 from app.database import init_db
 from app.jobs import JobType, Priority
+from app.locations_md import project_locations_md, read_locations_md
+from app.logging_config import recent_activity
 from app.models import Campaign, CampaignStatus, DealState
 from app.send_budget import budget_status
 
@@ -50,6 +53,12 @@ class PolicyRequest(BaseModel):
     allow_specific_dates: Optional[bool] = None
 
 
+def _suggested_places() -> list[str]:
+    """Destinations from locations.md, offered as a starting point in the UI."""
+    path = project_locations_md(Path(__file__).resolve().parents[2])
+    return read_locations_md(path) if path.exists() else []
+
+
 def create_app(db_path: Optional[str] = None) -> FastAPI:
     """Build the API. ``db_path`` is for tests; production uses the configured DB."""
     init_db(db_path)
@@ -57,7 +66,17 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
-        return render_dashboard(daily_brief(db_path))
+        return render_dashboard(
+            daily_brief(db_path),
+            activity=recent_activity(40),
+            campaigns=campaign_repo.list_campaigns(db_path),
+            suggested_places=_suggested_places(),
+        )
+
+    @app.get("/api/activity")
+    def activity(limit: int = 60) -> list[dict]:
+        """What the agents have been doing, newest first."""
+        return recent_activity(limit)
 
     @app.get("/api/brief")
     def brief() -> dict:
@@ -141,8 +160,14 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             stay_nights=request.stay_nights,
             status=CampaignStatus.ACTIVE,
         )
-        campaign_id = planner.bootstrap_campaign(campaign, request.places, db_path)
-        return {"campaign_id": campaign_id, "territories": len(request.places)}
+        places = request.places or _suggested_places()
+        campaign_id = planner.bootstrap_campaign(campaign, places, db_path)
+        queued = planner.plan_tick(campaign_id, db_path)
+        return {
+            "campaign_id": campaign_id,
+            "territories": len(places),
+            "queued": queued["total"],
+        }
 
     @app.get("/api/campaigns/{campaign_id}/itinerary")
     def itinerary(campaign_id: int) -> list[dict]:
