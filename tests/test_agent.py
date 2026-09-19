@@ -217,7 +217,7 @@ def test_classify_node_with_mock_llm():
 
     with patch("app.agent.negotiator.get_llm", return_value=mock_llm):
         state = {
-            "threads": [
+            "candidates": [
                 {
                     "thread_id": "1",
                     "host_name": "Host A",
@@ -227,8 +227,9 @@ def test_classify_node_with_mock_llm():
             ]
         }
         result = classify_node(state)
-        assert len(result["threads_needing_reply"]) == 1
-        assert result["threads_needing_reply"][0]["thread_id"] == "1"
+        assert len(result["candidates"]) == 1
+        assert result["candidates"][0]["thread_id"] == "1"
+        assert result["candidates"][0]["classify_reason"] == "host asked a question"
 
 
 def test_classify_node_no_reply_needed():
@@ -240,9 +241,11 @@ def test_classify_node_no_reply_needed():
     mock_llm = MagicMock()
     mock_llm.invoke.return_value = mock_response
 
-    with patch("app.agent.negotiator.get_llm", return_value=mock_llm):
+    with patch("app.agent.negotiator.get_llm", return_value=mock_llm), patch(
+        "app.agent.negotiator.dismiss_thread"
+    ) as mock_dismiss:
         state = {
-            "threads": [
+            "candidates": [
                 {
                     "thread_id": "2",
                     "host_name": "Host B",
@@ -252,7 +255,8 @@ def test_classify_node_no_reply_needed():
             ]
         }
         result = classify_node(state)
-        assert len(result["threads_needing_reply"]) == 0
+        assert len(result["candidates"]) == 0
+        mock_dismiss.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +264,8 @@ def test_classify_node_no_reply_needed():
 # ---------------------------------------------------------------------------
 
 
-def test_generate_replies_node_with_mock_llm():
-    from app.agent.negotiator import generate_replies_node
+def test_generate_reply_node_with_mock_llm():
+    from app.agent.negotiator import generate_reply_node
 
     mock_response = MagicMock()
     mock_response.content = "Hi! I'd love to discuss a collab. Would a content exchange work?"
@@ -271,21 +275,23 @@ def test_generate_replies_node_with_mock_llm():
 
     with patch("app.agent.negotiator.get_llm", return_value=mock_llm):
         state = {
-            "threads_needing_reply": [
-                {
-                    "thread_id": "1",
-                    "host_name": "Alice",
-                    "listing_title": "Beachfront Villa",
-                    "conversation_text": "**Host**: Are you interested?",
-                    "classify_reason": "host asked question",
-                }
-            ]
+            "picked_thread": {
+                "thread_id": "1",
+                "host_name": "Alice",
+                "listing_title": "Beachfront Villa",
+                "conversation_text": "**Host**: Are you interested?",
+                "classify_reason": "host asked question",
+            }
         }
-        result = generate_replies_node(state)
-        replies = result["generated_replies"]
-        assert len(replies) == 1
-        assert replies[0]["host_name"] == "Alice"
-        assert "collab" in replies[0]["reply"].lower()
+        reply = generate_reply_node(state)["generated_reply"]
+        assert reply["host_name"] == "Alice"
+        assert "collab" in reply["reply"].lower()
+
+
+def test_generate_reply_node_without_a_picked_thread():
+    from app.agent.negotiator import generate_reply_node
+
+    assert generate_reply_node({"picked_thread": {}})["generated_reply"] == {}
 
 
 # ---------------------------------------------------------------------------

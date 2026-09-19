@@ -22,6 +22,7 @@ from playwright.async_api import (
     Page,
 )
 
+from app import deals as deal_repo
 from app.browser_session import (
     close_airbnb_session,
     flush_profile_after_login,
@@ -36,12 +37,21 @@ from app.database import (
     has_sent_outreach_to_listing,
     update_outreach_status,
 )
-from app.models import Listing, OutreachMessage, OutreachStatus
+from app.models import (
+    DealState,
+    Listing,
+    MessageKind,
+    OutreachMessage,
+    OutreachStatus,
+)
 from app.outreach_quota import (
     record_successful_send,
     sleep_between_outreach_attempts,
     wait_until_send_allowed,
 )
+from app.send_budget import Channel, SendingFrozen, reserved_send
+from app.thread_linking import capture_thread_reference
+from app.warden import review as warden_review
 
 logger = logging.getLogger(__name__)
 
@@ -678,8 +688,12 @@ async def _send_message_to_host(
     page: Page,
     listing: Listing,
     message: str,
-) -> None:
+) -> tuple[Optional[str], str]:
     """Navigate to a listing and send a message to the host.
+
+    Returns the ``(thread_id, thread_url)`` the send produced, so the deal can
+    be linked to the conversation it started. Either may be empty when Airbnb
+    keeps you on the listing page.
 
     Raises Exception if the message could not be sent.
     """
@@ -715,6 +729,11 @@ async def _send_message_to_host(
     await _async_sleep_ms(2000)
     await _raise_if_airbnb_host_quota_screen(page)
     logger.info("Message sent to %s for '%s'", listing.host_name or "host", listing.title)
+
+    thread_id, thread_url = await capture_thread_reference(page)
+    if thread_id:
+        logger.info("Linked to thread %s", thread_id)
+    return thread_id, thread_url
 
 
 async def run_outreach(
@@ -856,21 +875,77 @@ async def run_outreach(
                     visit_url,
                 )
 
-                await wait_until_send_allowed(db_path)
+                deal_id = deal_repo.upsert_deal(
+                    msg.listing_id,
+                    host_name=msg.host_name,
+                    place_name=msg.place_name,
+                    location=msg.location,
+                    listing_url=listing.url,
+                    db_path=db_path,
+                )
+                deal = deal_repo.get_deal(deal_id, db_path)
+                verdict = warden_review(msg.message, deal=deal, db_path=db_path)
+                message_id = deal_repo.record_message(
+                    deal_id,
+                    msg.message,
+                    kind=MessageKind.OUTREACH,
+                    agent="scribe",
+                    idempotency_key=f"outreach:{msg.id}",
+                    legacy_outreach_id=msg.id,
+                    db_path=db_path,
+                )
+
+                if not verdict.allowed:
+                    deal_repo.mark_message_blocked(message_id, verdict.reason, db_path)
+                    deal_repo.escalate(deal_id, verdict.reason, db_path=db_path)
+                    update_outreach_status(
+                        msg.id, OutreachStatus.SKIPPED, verdict.reason, db_path
+                    )
+                    summary["skipped"] += 1
+                    continue
+
                 update_outreach_status(msg.id, OutreachStatus.SENDING, "", db_path)
 
                 try:
-                    await _send_message_to_host(page, listing, msg.message)
+                    async with reserved_send(Channel.OUTREACH, db_path):
+                        thread_id, thread_url = await _send_message_to_host(
+                            page, listing, msg.message
+                        )
                     update_outreach_status(msg.id, OutreachStatus.SENT, "", db_path)
+                    deal_repo.mark_message_sent(message_id, db_path)
+                    deal_repo.advance_to(
+                        deal_id,
+                        DealState.CONTACTED,
+                        reason="outreach sent",
+                        actor="scribe",
+                        db_path=db_path,
+                    )
+                    if thread_id:
+                        deal_repo.link_thread(
+                            deal_id, thread_id, thread_url=thread_url, db_path=db_path
+                        )
                     summary["sent"] += 1
-                    record_successful_send(db_path)
                     logger.info(
                         "✅ Sent message to %s (%s)",
                         msg.host_name,
                         msg.place_name,
                     )
+                except SendingFrozen as e:
+                    deal_repo.mark_message_blocked(message_id, str(e), db_path)
+                    update_outreach_status(
+                        msg.id, OutreachStatus.SKIPPED, str(e), db_path
+                    )
+                    summary["skipped"] += 1
+                    logger.error("🛑 %s — stopping this run", e)
+                    for msg2 in pending[idx + 1 :]:
+                        update_outreach_status(
+                            msg2.id, OutreachStatus.SKIPPED, str(e), db_path
+                        )
+                        summary["skipped"] += 1
+                    break
                 except AirbnbHostQuotaUIError as e:
                     error_msg = str(e)
+                    deal_repo.mark_message_failed(message_id, error_msg, db_path)
                     update_outreach_status(
                         msg.id, OutreachStatus.SKIPPED, error_msg, db_path
                     )
@@ -888,6 +963,7 @@ async def run_outreach(
                     break
                 except Exception as e:
                     error_msg = str(e)
+                    deal_repo.mark_message_failed(message_id, error_msg, db_path)
                     update_outreach_status(
                         msg.id, OutreachStatus.FAILED, error_msg, db_path
                     )

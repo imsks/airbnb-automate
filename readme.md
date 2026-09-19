@@ -2,6 +2,67 @@
 
 A tool to search Airbnb listings, **automatically outreach to hosts**, and **negotiate stays via an AI agent** — all from a CLI or web UI.
 
+---
+
+## v2 — the agent office
+
+v2 turns the one-shot script into a durable pipeline. A **Planner** breaks a campaign goal into jobs on a queue; specialist agents drain it: **Scout** (where to go, and in which month), **Prospector** (find listings), **Analyst** (score which are worth a message), **Scribe** (write it), **Closer** (negotiate and reply), **Warden** (block anything that breaks your rules), **Chronicler** (the dashboard).
+
+The agents run **fully autonomously up to Airbnb's payment wall** — they negotiate and agree terms, then hand you a Ready to Book queue, because only you have the card.
+
+### Two processes
+
+The API never touches the browser; the worker owns it exclusively. Run the worker where you're logged in to Airbnb.
+
+```bash
+make api      # dashboard on http://127.0.0.1:8000
+make worker   # drains the job queue, drives the browser
+```
+
+### Start a campaign
+
+```bash
+# Places come from locations.md unless you pass --places / --places-file
+python manage.py campaign "Winter tour" \
+    --window 2026-11 2027-02 --origin "Delhi" --nights 7
+
+python manage.py worker        # research → route → discover → score → outreach
+python manage.py itinerary     # the route the Router planned
+python manage.py brief         # today's brief in the terminal
+python manage.py status        # queue depth + how many sends are left
+python manage.py sync          # queue an inbox sync
+```
+
+### The kill switch
+
+One flag freezes every outbound message immediately. The worker re-reads it before each send, so it takes effect mid-run.
+
+```bash
+python manage.py freeze --reason "account looks flagged"
+python manage.py resume
+```
+
+### Guardrails
+
+Full autonomy means the only thing between the model and a commitment is the **Warden**, which validates the final text deterministically — prompts leak, validators don't. It blocks a draft and parks the deal for you if it would:
+
+- agree to pay above your per-night ceiling,
+- commit to specific calendar dates rather than a window,
+- promise more than your approved deliverables,
+- share contact details or suggest going off-platform,
+- claim more reach than your fact sheet allows,
+- exceed the reply cap on one thread.
+
+Configure these in `.env` (seeds) or from the dashboard at `POST /api/policy` (live). See `.env.example`.
+
+### Send budget
+
+Airbnb caps host messaging. v1 only counted first-touch outreach, so auto-sending negotiation replies would have silently doubled the real rate. In v2 **outreach and negotiation share one budget**; negotiation just gets higher queue priority, because a warm thread is worth far more than a cold message. The Planner won't queue sends it has no budget to deliver.
+
+The metric on the dashboard is **deals closed per 100 messages** — volume is capped, so the only way to improve is to convert better.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Install Dependencies

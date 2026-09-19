@@ -5,6 +5,7 @@ import sqlite3
 from typing import Optional
 
 from app.config import get_db_path
+from app.migrations import run_migrations
 from app.models import Listing, OutreachMessage, OutreachStatus, Search, SearchStatus
 
 
@@ -65,97 +66,15 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
 
 
 def init_db(db_path: Optional[str] = None) -> None:
-    """Initialize database tables and migrate legacy schemas."""
+    """Bring the database up to the latest schema version."""
     conn = get_connection(db_path)
     try:
-        # Tables only: IF NOT EXISTS leaves an old listings table unchanged, so we
-        # must migrate before creating indexes on new columns.
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS searches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                location TEXT NOT NULL,
-                checkin TEXT DEFAULT '',
-                checkout TEXT DEFAULT '',
-                guests INTEGER DEFAULT 2,
-                min_price REAL,
-                max_price REAL,
-                date_mode TEXT DEFAULT 'flexible',
-                flex_duration INTEGER DEFAULT 1,
-                flex_duration_unit TEXT DEFAULT 'week',
-                status TEXT DEFAULT 'searching',
-                listings_count INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS listings (
-                id TEXT PRIMARY KEY,
-                search_id INTEGER,
-                url TEXT,
-                title TEXT,
-                host_name TEXT,
-                location TEXT,
-                price_per_night REAL,
-                currency TEXT DEFAULT 'USD',
-                rating REAL DEFAULT 0,
-                review_count INTEGER DEFAULT 0,
-                property_type TEXT,
-                guests INTEGER DEFAULT 0,
-                bedrooms INTEGER DEFAULT 0,
-                bathrooms REAL DEFAULT 0,
-                amenities TEXT DEFAULT '[]',
-                photo_url TEXT,
-                superhost INTEGER DEFAULT 0,
-                scraped_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (search_id) REFERENCES searches(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS outreach_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                search_id INTEGER NOT NULL,
-                listing_id TEXT NOT NULL,
-                host_name TEXT DEFAULT '',
-                place_name TEXT DEFAULT '',
-                location TEXT DEFAULT '',
-                message TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                error TEXT DEFAULT '',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                sent_at TEXT,
-                FOREIGN KEY (search_id) REFERENCES searches(id),
-                FOREIGN KEY (listing_id) REFERENCES listings(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS outreach_send_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sent_at REAL NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS dismissed_threads (
-                thread_id TEXT PRIMARY KEY,
-                host_name TEXT DEFAULT '',
-                reason TEXT DEFAULT '',
-                dismissed_at TEXT DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
+        # Legacy column fixups run first: migration 0001 indexes listings(search_id),
+        # which fails outright on a pre-search_id table.
         _migrate_searches_flexible_columns(conn)
         _migrate_listings_search_id(conn)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_listings_search "
-            "ON listings(search_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outreach_search "
-            "ON outreach_messages(search_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outreach_listing "
-            "ON outreach_messages(listing_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_outreach_send_log_sent_at "
-            "ON outreach_send_log(sent_at)"
-        )
         conn.commit()
+        run_migrations(conn)
     finally:
         conn.close()
 
@@ -332,29 +251,43 @@ def get_listings(search_id: int, db_path: Optional[str] = None) -> list[Listing]
             (search_id, search_id),
         ).fetchall()
 
-        return [
-            Listing(
-                id=row["id"],
-                url=row["url"],
-                title=row["title"],
-                host_name=row["host_name"],
-                location=row["location"],
-                price_per_night=row["price_per_night"],
-                currency=row["currency"],
-                rating=row["rating"],
-                review_count=row["review_count"],
-                property_type=row["property_type"],
-                guests=row["guests"],
-                bedrooms=row["bedrooms"],
-                bathrooms=row["bathrooms"],
-                amenities=json.loads(row["amenities"]),
-                photo_url=row["photo_url"],
-                superhost=bool(row["superhost"]),
-            )
-            for row in rows
-        ]
+        return [_listing_from_row(row) for row in rows]
     finally:
         conn.close()
+
+
+def _listing_from_row(row: sqlite3.Row) -> Listing:
+    """Build a Listing, tolerating NULLs in nullable columns.
+
+    A partial scrape or a legacy row leaves text columns NULL, and a single one
+    of those used to raise and take the whole search's listings with it.
+    """
+
+    def text(key: str) -> str:
+        return row[key] or ""
+
+    def number(key: str, default=0):
+        value = row[key]
+        return default if value is None else value
+
+    return Listing(
+        id=text("id"),
+        url=text("url"),
+        title=text("title"),
+        host_name=text("host_name"),
+        location=text("location"),
+        price_per_night=number("price_per_night", 0.0),
+        currency=row["currency"] or "USD",
+        rating=number("rating", 0.0),
+        review_count=number("review_count"),
+        property_type=text("property_type"),
+        guests=number("guests"),
+        bedrooms=number("bedrooms"),
+        bathrooms=number("bathrooms", 0.0),
+        amenities=json.loads(row["amenities"] or "[]"),
+        photo_url=text("photo_url"),
+        superhost=bool(number("superhost")),
+    )
 
 
 # --- Outreach Operations ---

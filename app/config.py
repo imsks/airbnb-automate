@@ -127,3 +127,68 @@ def get_flex_trip_months_count() -> int:
     """How many consecutive calendar months to pass as ``flexible_trip_dates[]`` (flexible search)."""
     raw = (os.getenv("FLEX_TRIP_MONTHS_COUNT") or "3").strip()
     return max(1, min(12, int(raw)))
+
+
+# --- Guardrail defaults ---
+# These seed the policy table; runtime values are read via app.policy.
+
+
+def get_default_price_ceiling_per_night() -> tuple[float, str]:
+    """Most an agent may ever agree to pay per night, and the currency it is in.
+
+    ``0`` means the agent may only pursue free stays and must escalate any
+    paid counter-offer.
+    """
+    raw = (os.getenv("MAX_PRICE_PER_NIGHT") or "0").strip()
+    currency = (os.getenv("PRICE_CEILING_CURRENCY") or "INR").strip().upper()
+    return max(0.0, float(raw)), currency
+
+
+def get_default_allowed_deliverables() -> list[str]:
+    """The only things an agent may promise a host, as comma-separated env values."""
+    raw = (os.getenv("ALLOWED_DELIVERABLES") or "").strip()
+    if not raw:
+        return [
+            "2 Instagram reels",
+            "10 edited photos",
+            "1 honest public review",
+            "story coverage during the stay",
+        ]
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def get_default_max_agent_replies_per_thread() -> int:
+    """How many agent replies one thread may receive before a human must look."""
+    raw = (os.getenv("MAX_AGENT_REPLIES_PER_THREAD") or "4").strip()
+    return max(1, int(raw))
+
+
+def get_default_credential_facts() -> dict[str, str]:
+    """The claims an agent is allowed to make about who you are and your reach.
+
+    The Warden cross-checks every draft against these, so anything not listed
+    here cannot be asserted to a host.
+    """
+    return {
+        "name": (os.getenv("CREATOR_NAME") or "Sachin Kumar Shukla").strip(),
+        "role": (
+            os.getenv("CREATOR_ROLE") or "remote software engineer and founder of The Boring Education"
+        ).strip(),
+        "followers": (os.getenv("CREATOR_FOLLOWERS") or "150k+ combined").strip(),
+        "handles": (
+            os.getenv("CREATOR_HANDLES") or "@theboringfounder, @theboringeducation"
+        ).strip(),
+    }
+
+
+def get_follower_claim_ceiling() -> int:
+    """Largest follower number an agent may state, parsed from the fact sheet."""
+    raw = (os.getenv("CREATOR_FOLLOWERS_MAX") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    facts = get_default_credential_facts()["followers"].lower()
+    digits = "".join(ch for ch in facts if ch.isdigit())
+    if not digits:
+        return 0
+    value = int(digits)
+    return value * 1000 if "k" in facts else value
