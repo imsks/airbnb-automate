@@ -18,7 +18,7 @@ from typing import Optional
 from app import campaigns as campaign_repo
 from app import jobs, leads as lead_repo, territories as territory_repo
 from app.jobs import JobType, Priority
-from app.models import Campaign, DealState
+from app.models import Campaign, CampaignStatus, DealState
 from app.send_budget import remaining_sends
 
 logger = logging.getLogger(__name__)
@@ -30,22 +30,58 @@ MAX_RESEARCH_PER_TICK = 5
 MAX_ENRICH_PER_TICK = 10
 MAX_SCORE_PER_TICK = 10
 
+#: Deals backfilled from v1 have no campaign, so the default bucket is always
+#: ticked alongside real campaigns — otherwise old threads are never negotiated.
+DEFAULT_BUCKET = 0
 
-def plan_tick(campaign_id: int = 0, db_path: Optional[str] = None) -> dict:
-    """Enqueue whatever the pipeline is missing right now."""
-    queued: dict[str, int] = {}
 
-    queued["research"] = _queue_research(db_path)
-    queued["route"] = _queue_route(campaign_id, db_path)
-    queued["discover"] = _queue_discovery(campaign_id, db_path)
-    queued["enrich"] = _queue_enrichment(campaign_id, db_path)
-    queued["score"] = _queue_scoring(campaign_id, db_path)
-    queued["outreach"] = _queue_outreach(campaign_id, db_path)
-    queued["negotiate"] = _queue_negotiations(campaign_id, db_path)
+def active_campaign_ids(db_path: Optional[str] = None) -> list[int]:
+    """Buckets the Planner should work on: every active campaign, plus legacy."""
+    ids = [
+        c.id
+        for c in campaign_repo.list_campaigns(db_path)
+        if c.id is not None and c.status is CampaignStatus.ACTIVE
+    ]
+    return ids + [DEFAULT_BUCKET]
+
+
+def plan_tick(
+    campaign_id: Optional[int] = None, db_path: Optional[str] = None
+) -> dict:
+    """Enqueue whatever the pipeline is missing right now.
+
+    With no ``campaign_id`` this plans for every active campaign. That is the
+    default because a campaign created in the UI gets a fresh id, and a worker
+    pinned to one bucket would research territories forever while never
+    discovering, scoring or contacting anything.
+    """
+    buckets = (
+        [campaign_id] if campaign_id is not None else active_campaign_ids(db_path)
+    )
+
+    # Territory research belongs to no campaign, so it is queued once per tick.
+    queued: dict[str, int] = {"research": _queue_research(db_path)}
+    for key in ("route", "discover", "enrich", "score", "outreach", "negotiate"):
+        queued[key] = 0
+
+    for bucket in buckets:
+        queued["route"] += _queue_route(bucket, db_path)
+        queued["discover"] += _queue_discovery(bucket, db_path)
+        queued["enrich"] += _queue_enrichment(bucket, db_path)
+        queued["score"] += _queue_scoring(bucket, db_path)
+        queued["outreach"] += _queue_outreach(bucket, db_path)
+        queued["negotiate"] += _queue_negotiations(bucket, db_path)
 
     total = sum(queued.values())
-    logger.info("🧭 Planner tick queued %d job(s): %s", total, queued)
-    return {"queued": queued, "total": total}
+    if total:
+        logger.info("🧭 Planner queued %d job(s): %s", total, _summarise(queued))
+    else:
+        logger.debug("🧭 Planner tick: nothing to queue")
+    return {"queued": queued, "total": total, "campaigns": buckets}
+
+
+def _summarise(queued: dict[str, int]) -> str:
+    return ", ".join(f"{k} {v}" for k, v in queued.items() if v)
 
 
 def _queue_research(db_path: Optional[str]) -> int:

@@ -22,6 +22,7 @@ from app import deals as deal_repo
 from app import inbox, jobs, leads as lead_repo, territories as territory_repo
 from app.agent import planner
 from app.agent.analyst import score_lead_with_llm
+from app.agent.chat_reader import SessionExpired
 from app.agent.chronicler import daily_brief
 from app.agent.closer import NotNegotiable, extract_terms, prepare_reply
 from app.agent.router import plan_route
@@ -30,6 +31,7 @@ from app.database import get_connection, get_listings, init_db
 from app.jobs import JobType
 from app.listing_detail import scrape_listing_detail
 from app.models import DealState, Job
+from app.policy import freeze_sending
 from app.send_budget import SendingFrozen
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,7 @@ class Worker:
     def __init__(
         self,
         *,
-        campaign_id: int = 0,
+        campaign_id: Optional[int] = None,
         headless: bool = True,
         db_path: Optional[str] = None,
         name: str = "worker-1",
@@ -77,7 +79,12 @@ class Worker:
 
     async def run(self, once: bool = False) -> None:
         """Drain the queue until stopped."""
-        logger.info("👷 %s started (campaign %s)", self.name, self.campaign_id)
+        scope = (
+            "all active campaigns"
+            if self.campaign_id is None
+            else f"campaign {self.campaign_id}"
+        )
+        logger.info("👷 %s started (%s)", self.name, scope)
         while not self._stop:
             jobs.reclaim_expired_leases(self.db_path)
             await self._maybe_tick()
@@ -111,6 +118,12 @@ class Worker:
             if asyncio.iscoroutine(result):
                 result = await result
             jobs.complete(job.id, result if isinstance(result, dict) else {}, self.db_path)
+        except SessionExpired as exc:
+            # Every browser job will fail the same way until a human signs in,
+            # and sending while logged out is how accounts get flagged.
+            jobs.cancel(job.id, str(exc), self.db_path)
+            freeze_sending(f"Airbnb session expired: {exc}", self.db_path)
+            logger.error("🔑 %s — sending frozen until you log in again", exc)
         except SendingFrozen as exc:
             # Retrying would just hit the switch again; a human must release it.
             jobs.cancel(job.id, str(exc), self.db_path)
@@ -341,7 +354,7 @@ def _find_listing(listing_id: str, db_path: Optional[str]):
 
 
 def main(
-    campaign_id: int = 0,
+    campaign_id: Optional[int] = None,
     headless: bool = True,
     db_path: Optional[str] = None,
     once: bool = False,

@@ -242,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     start = sub.add_parser("start", help="run everything and open the dashboard")
-    start.add_argument("--campaign", type=int, default=0)
+    start.add_argument("--campaign", type=int, default=None)
     start.add_argument("--host", default="127.0.0.1")
     start.add_argument("--port", type=int, default=8000)
     start.add_argument("--no-browser", action="store_true", help="don't open a tab")
@@ -272,7 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     campaign.set_defaults(func=cmd_campaign)
 
     worker = sub.add_parser("worker", help="drain the job queue (owns the browser)")
-    worker.add_argument("--campaign", type=int, default=0)
+    worker.add_argument("--campaign", type=int, default=None)
     worker.add_argument("--no-headless", action="store_true", help="show the browser")
     worker.add_argument("--once", action="store_true", help="run a single job and exit")
     worker.set_defaults(func=cmd_worker)
@@ -284,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
     api.set_defaults(func=cmd_api)
 
     tick = sub.add_parser("tick", help="plan one round of work now")
-    tick.add_argument("--campaign", type=int, default=0)
+    tick.add_argument("--campaign", type=int, default=None)
     tick.set_defaults(func=cmd_tick)
 
     itinerary = sub.add_parser("itinerary", help="show the planned route")

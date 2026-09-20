@@ -30,6 +30,10 @@ from app.config import get_airbnb_base_url
 logger = logging.getLogger(__name__)
 
 
+class SessionExpired(RuntimeError):
+    """Airbnb bounced us to the login page — only a human can fix this."""
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -395,7 +399,13 @@ async def fetch_inbox_chats(
             # redirects to /hosting/messages/{thread_id} which still
             # renders the sidebar thread list we need.
             current_url = page.url
-            logger.info("Current URL after navigation: %s", current_url)
+            logger.debug("Current URL after navigation: %s", current_url)
+
+            if "/login" in current_url or "/signup" in current_url:
+                raise SessionExpired(
+                    "Airbnb redirected to the login page — the saved session is no "
+                    "longer valid. Run: python manage.py login"
+                )
 
             if (
                 "/hosting/inbox" not in current_url
@@ -403,7 +413,7 @@ async def fetch_inbox_chats(
                 and "/messaging" not in current_url
             ):
                 guest_inbox = f"{_airbnb_origin()}/messaging"
-                logger.info(
+                logger.debug(
                     "Redirected away from inbox — trying guest inbox: %s",
                     guest_inbox,
                 )
@@ -413,7 +423,12 @@ async def fetch_inbox_chats(
                     timeout=30000,
                 )
                 await _async_sleep_ms(3000)
-                logger.info("Current URL: %s", page.url)
+                logger.debug("Current URL: %s", page.url)
+                if "/login" in page.url or "/signup" in page.url:
+                    raise SessionExpired(
+                        "Airbnb redirected to the login page — run: "
+                        "python manage.py login"
+                    )
 
             # ── Scrape thread list ──
             thread_meta = await _get_inbox_threads(page)

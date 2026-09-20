@@ -17,7 +17,7 @@ from app.agent.closer import NotNegotiable, prepare_reply
 from app.api.main import create_app
 from app.database import get_connection, init_db
 from app.jobs import JobType
-from app.models import Campaign, CampaignStatus, DealState, MessageStatus
+from app.models import Campaign, CampaignStatus, DealState, MessageStatus, TerritoryProfile
 from app.worker import Worker, sweep_stale
 
 _REPOS = (
@@ -154,13 +154,75 @@ def test_sweeper_leaves_deals_that_got_a_reply(db):
 def test_planner_queues_research_for_new_territories(db):
     territory_repo.upsert_territory("Goa, India", db_path=db)
     territory_repo.upsert_territory("Manali, Himachal Pradesh", db_path=db)
-    assert planner.plan_tick(0, db)["queued"]["research"] == 2
+    assert planner.plan_tick(db_path=db)["queued"]["research"] == 2
+
+
+def test_planner_works_on_campaigns_it_was_not_told_about(db):
+    """A campaign created in the UI gets a fresh id. A planner pinned to bucket
+    0 would research territories forever and never discover anything."""
+    campaign_id = planner.bootstrap_campaign(
+        Campaign(
+            name="Winter",
+            window_start="2026-11",
+            window_end="2026-11",
+            status=CampaignStatus.ACTIVE,
+        ),
+        ["Goa, India"],
+        db,
+    )
+    assert campaign_id != 0
+
+    territory = territory_repo.get_territory_by_name("Goa, India", db)
+    territory_repo.save_profile(
+        TerritoryProfile(territory_id=territory.id, seasonality={"november": 0.9}),
+        db_path=db,
+    )
+
+    result = planner.plan_tick(db_path=db)
+    assert campaign_id in result["campaigns"]
+    assert result["queued"]["route"] == 1
+
+
+def test_planner_still_covers_the_legacy_bucket(db):
+    """Deals backfilled from v1 have no campaign and must not be orphaned."""
+    assert planner.DEFAULT_BUCKET in planner.active_campaign_ids(db)
+
+
+def test_planner_ignores_paused_campaigns(db):
+    campaign_id = planner.bootstrap_campaign(
+        Campaign(name="Paused", status=CampaignStatus.PAUSED), ["Goa, India"], db
+    )
+    assert campaign_id not in planner.active_campaign_ids(db)
+
+
+def test_planner_can_still_be_pinned_to_one_campaign(db):
+    planner.bootstrap_campaign(
+        Campaign(name="A", status=CampaignStatus.ACTIVE), ["Goa, India"], db
+    )
+    assert planner.plan_tick(0, db)["campaigns"] == [0]
+
+
+def test_expired_session_freezes_sending_and_cancels_the_job(db):
+    """Logged out, every browser job fails the same way — and sending while
+    logged out is how an account gets flagged."""
+    from app.agent.chat_reader import SessionExpired
+
+    job_id = jobs.enqueue(JobType.SYNC_INBOX, db_path=db)
+    worker = Worker(db_path=db)
+    worker._last_tick = 9e18
+    worker._handlers[JobType.SYNC_INBOX] = MagicMock(
+        side_effect=SessionExpired("redirected to login")
+    )
+    _run(worker)
+
+    assert jobs.get_job(job_id, db).status.value == "cancelled"
+    assert policy_mod.sending_enabled(db) is False
 
 
 def test_planner_does_not_requeue_the_same_research(db):
     territory_repo.upsert_territory("Goa, India", db_path=db)
-    planner.plan_tick(0, db)
-    assert planner.plan_tick(0, db)["queued"]["research"] == 0
+    planner.plan_tick(db_path=db)
+    assert planner.plan_tick(db_path=db)["queued"]["research"] == 0
 
 
 def test_planner_respects_send_budget_backpressure(db, monkeypatch):

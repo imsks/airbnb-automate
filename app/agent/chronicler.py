@@ -217,7 +217,7 @@ def daily_brief(db_path: Optional[str] = None) -> dict:
         "cost_by_agent": cost_by_agent(db_path),
         "prompt_performance": reply_rate_by_prompt_version(db_path),
     }
-    logger.info(
+    logger.debug(
         "📰 Brief: %d ready to book, %d need a human, %d anomaly(ies)",
         len(brief["queues"]["ready_to_book"]),
         len(brief["queues"]["needs_human"]),
