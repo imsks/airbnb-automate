@@ -180,7 +180,10 @@ def anomalies(db_path: Optional[str] = None) -> list[str]:
             f"{depth['pending']} job(s) are queued — the worker may be stuck."
         )
     if depth.get("failed", 0):
-        alerts.append(f"{depth['failed']} job(s) have exhausted their retries.")
+        alerts.append(
+            f"{depth['failed']} job(s) have exhausted their retries — use Retry "
+            "failed jobs once the cause is fixed."
+        )
     if activity["messages_blocked"]:
         alerts.append(
             f"The Warden blocked {activity['messages_blocked']} draft(s) in the last "

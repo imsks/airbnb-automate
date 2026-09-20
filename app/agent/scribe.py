@@ -20,7 +20,7 @@ from app import territories as territory_repo
 from app.agent.llm import get_llm
 from app.agent.prompts_v2 import SCRIBE_PROMPT_VERSION, build_scribe_prompt
 from app.agent.runs import tracked_invoke
-from app.browser_session import close_airbnb_session, open_airbnb_browser
+from app.browser_session import airbnb_page
 from app.models import DealState, Lead, Listing, MessageKind
 from app.policy import GuardrailPolicy, load_policy
 from app.send_budget import Channel, reserved_send
@@ -155,12 +155,12 @@ async def send_outreach_for_lead(
     message_id = prepared["message_id"]
     listing = prepared["listing"]
 
-    context, page, browser, uses_cdp = await open_airbnb_browser(headless=headless)
     try:
-        async with reserved_send(Channel.OUTREACH, db_path):
-            thread_id, thread_url = await _send_message_to_host(
-                page, listing, prepared["message"]
-            )
+        async with airbnb_page(headless=headless) as page:
+            async with reserved_send(Channel.OUTREACH, db_path):
+                thread_id, thread_url = await _send_message_to_host(
+                    page, listing, prepared["message"]
+                )
         deal_repo.mark_message_sent(message_id, db_path)
         deal_repo.advance_to(
             deal_id,
@@ -183,5 +183,3 @@ async def send_outreach_for_lead(
     except Exception as exc:
         deal_repo.mark_message_failed(message_id, str(exc), db_path)
         raise
-    finally:
-        await close_airbnb_session(context, browser, uses_cdp)

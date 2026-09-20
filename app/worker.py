@@ -37,7 +37,12 @@ from app.send_budget import SendingFrozen
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 5.0
+#: While jobs are flowing, replanning often is wasted work.
 PLANNER_TICK_SECONDS = 300.0
+#: When the queue drains, the last job may have unblocked the next stage —
+#: routing creates stops, which create discovery. Waiting 5 minutes to notice
+#: makes a working pipeline look stalled.
+IDLE_PLANNER_TICK_SECONDS = 15.0
 STALE_AFTER_DAYS = 10
 
 
@@ -84,13 +89,21 @@ class Worker:
             if self.campaign_id is None
             else f"campaign {self.campaign_id}"
         )
-        logger.info("👷 %s started (%s)", self.name, scope)
+        from app.config import get_db_path
+
+        logger.info(
+            "👷 %s started (%s) on %s",
+            self.name,
+            scope,
+            self.db_path or get_db_path(),
+        )
         while not self._stop:
             jobs.reclaim_expired_leases(self.db_path)
             await self._maybe_tick()
 
             leased = jobs.lease(self.name, limit=1, db_path=self.db_path)
             if not leased:
+                await self._maybe_tick(idle=True)
                 if once:
                     return
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
@@ -100,11 +113,12 @@ class Worker:
             if once:
                 return
 
-    async def _maybe_tick(self) -> None:
-        if time.time() - self._last_tick < PLANNER_TICK_SECONDS:
+    async def _maybe_tick(self, idle: bool = False) -> None:
+        interval = IDLE_PLANNER_TICK_SECONDS if idle else PLANNER_TICK_SECONDS
+        if time.time() - self._last_tick < interval:
             return
         self._last_tick = time.time()
-        planner.plan_tick(self.campaign_id, self.db_path)
+        await asyncio.to_thread(planner.plan_tick, self.campaign_id, self.db_path)
 
     async def _execute(self, job: Job) -> None:
         handler = self._handlers.get(job.type)
@@ -114,9 +128,12 @@ class Worker:
 
         logger.info("▶️  %s #%s (attempt %s)", job.type, job.id, job.attempts)
         try:
-            result = handler(job)
-            if asyncio.iscoroutine(result):
-                result = await result
+            if asyncio.iscoroutinefunction(handler):
+                result = await handler(job)
+            else:
+                # LLM calls and SQLite block. Run them off the loop, or a
+                # 13-second scout freezes the dashboard sharing this process.
+                result = await asyncio.to_thread(handler, job)
             jobs.complete(job.id, result if isinstance(result, dict) else {}, self.db_path)
         except SessionExpired as exc:
             # Every browser job will fail the same way until a human signs in,
@@ -163,6 +180,18 @@ class Worker:
         }
         stops = plan_route(campaign, territories, profiles)
         campaign_repo.save_stops(campaign_id, stops, self.db_path)
+
+        if not campaign.window_start:
+            logger.warning(
+                "🗺  '%s' has no travel window — planning 12 months from today. "
+                "Set one on the campaign to constrain it.",
+                campaign.name,
+            )
+        logger.info(
+            "🗺  Route for '%s': %s",
+            campaign.name,
+            " → ".join(f"{s.target_month} {s.territory_name}" for s in stops) or "(none)",
+        )
         return {"stops": len(stops), "itinerary": [s.territory_name for s in stops]}
 
     async def _discover_leads(self, job: Job) -> dict:
@@ -332,7 +361,7 @@ def _record_search(location: str, listings: list, db_path: Optional[str]) -> int
     from app.models import Search, SearchStatus
 
     search_id = create_search(Search(location=location), db_path)
-    save_listings(search_id, listings, db_path)
+    save_listings(listings, search_id, db_path)
     update_search_status(search_id, SearchStatus.COMPLETED, len(listings), db_path)
     return search_id
 

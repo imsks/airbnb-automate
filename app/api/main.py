@@ -197,6 +197,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         )
         return {"job_id": job_id}
 
+    @app.post("/api/jobs/retry-failed")
+    def retry_failed_jobs() -> dict:
+        """Requeue jobs that exhausted their retries, e.g. after a fix ships."""
+        return {"requeued": jobs.retry_failed(db_path=db_path)}
+
     @app.post("/api/jobs/sweep")
     def queue_sweep() -> dict:
         job_id = jobs.enqueue(

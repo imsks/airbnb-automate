@@ -26,6 +26,7 @@ from app import campaigns as campaign_repo
 from app import jobs, policy as policy_mod
 from app.agent import planner
 from app.agent.chronicler import daily_brief
+from app.config import get_db_path
 from app.database import init_db
 from app.jobs import JobType, Priority
 from app.locations_md import project_locations_md, read_locations_md
@@ -80,16 +81,29 @@ def cmd_start(args) -> int:
 
     async def run_both() -> None:
         worker_task = asyncio.create_task(worker.run())
+
+        def _worker_died(task: "asyncio.Task") -> None:
+            # Without this the task dies silently and the dashboard keeps
+            # serving a system that is doing nothing.
+            if task.cancelled():
+                return
+            error = task.exception()
+            if error is not None:
+                logger.error("Worker stopped unexpectedly: %s", error, exc_info=error)
+                server.should_exit = True
+
+        worker_task.add_done_callback(_worker_died)
         try:
             await server.serve()
         finally:
             worker.stop()
-            await asyncio.wait_for(worker_task, timeout=30)
+            worker_task.cancel()
 
     if not args.no_browser:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     print(f"\n  Dashboard  {url}")
+    print(f"  Database   {get_db_path()}")
     print("  Worker     running — create a campaign in the UI to give it work")
     print("  Stop       Ctrl+C\n")
     try:

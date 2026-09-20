@@ -112,6 +112,7 @@ def _controls(sending_enabled: bool) -> str:
       {toggle}
       <button class="ghost" onclick="post('/api/jobs/sync-inbox')">Sync inbox</button>
       <button class="ghost" onclick="post('/api/campaigns/0/tick')">Plan work now</button>
+      <button class="ghost" onclick="post('/api/jobs/retry-failed').then(()=>location.reload())">Retry failed jobs</button>
       <button class="ghost" onclick="location.reload()">Refresh</button>
     </div>"""
 

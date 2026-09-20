@@ -131,6 +131,44 @@ def test_failure_at_max_attempts_gives_up(db):
     assert jobs.get_job(job_id).status is JobStatus.FAILED
 
 
+def test_a_terminally_failed_job_releases_its_idempotency_key(db):
+    """Otherwise a job that failed under a bug can never be queued again once
+    the bug is fixed, and its lead is stranded forever."""
+    job_id = jobs.enqueue(JobType.ENRICH_LEAD, {"lead_id": 7}, max_attempts=1, idempotency_key="enrich:7")
+    jobs.lease("w1")
+    assert jobs.fail(job_id, "browser exploded") is JobStatus.FAILED
+    assert jobs.get_job(job_id).idempotency_key is None
+
+    requeued = jobs.enqueue(
+        JobType.ENRICH_LEAD, {"lead_id": 7}, idempotency_key="enrich:7"
+    )
+    assert requeued and requeued != job_id
+
+
+def test_retry_failed_requeues_everything(db):
+    first = jobs.enqueue(JobType.ENRICH_LEAD, max_attempts=1)
+    second = jobs.enqueue(JobType.SCORE_LEAD, max_attempts=1)
+    for job_id in (first, second):
+        jobs.lease("w1")
+        jobs.fail(job_id, "boom")
+
+    assert jobs.retry_failed() == 2
+    assert jobs.get_job(first).status is JobStatus.PENDING
+    assert jobs.get_job(first).attempts == 0
+
+
+def test_retry_failed_can_target_one_type(db):
+    first = jobs.enqueue(JobType.ENRICH_LEAD, max_attempts=1)
+    second = jobs.enqueue(JobType.SCORE_LEAD, max_attempts=1)
+    for job_id in (first, second):
+        jobs.lease("w1")
+        jobs.fail(job_id, "boom")
+
+    assert jobs.retry_failed(JobType.ENRICH_LEAD) == 1
+    assert jobs.get_job(first).status is JobStatus.PENDING
+    assert jobs.get_job(second).status is JobStatus.FAILED
+
+
 def _force_runnable(path, job_id):
     conn = _conn(path)
     try:

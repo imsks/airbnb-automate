@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import tempfile
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -119,6 +120,16 @@ def _run_worker_until_idle(worker, limit=30):
     asyncio.run(drain())
 
 
+@asynccontextmanager
+async def _fake_page(headless: bool = True):
+    """Stand-in for ``browser_session.airbnb_page``.
+
+    Declared with the real signature on purpose: a bare AsyncMock accepts any
+    arguments, which is exactly how a wrong call site slipped through before.
+    """
+    yield MagicMock()
+
+
 def _seed_listing(path, listing_id="L1"):
     conn = get_connection(path)
     try:
@@ -205,9 +216,7 @@ def test_deal_walks_from_discovered_to_ready_to_book(db):
     send = AsyncMock(return_value=("T900", "https://airbnb.com/messages/thread/T900"))
     with patch("app.agent.scribe.get_llm", return_value=_llm(_OUTREACH_TEXT)), patch(
         "app.outreach._send_message_to_host", send
-    ), patch("app.agent.scribe.open_airbnb_browser", AsyncMock(
-        return_value=(MagicMock(), MagicMock(), None, False)
-    )), patch("app.agent.scribe.close_airbnb_session", AsyncMock()):
+    ), patch("app.agent.scribe.airbnb_page", _fake_page):
         _run_worker_until_idle(worker)
 
     deal = deal_repo.get_deal(deal.id, db)
@@ -223,9 +232,7 @@ def test_deal_walks_from_discovered_to_ready_to_book(db):
     # 4. Negotiate → reply sent, terms job queued.
     planner.plan_tick(0, db)
     with patch("app.agent.closer.get_llm", return_value=_llm(_REPLY_TEXT, _TERMS_JSON)), \
-         patch("app.inbox.open_airbnb_browser", AsyncMock(
-             return_value=(MagicMock(), MagicMock(), None, False))), \
-         patch("app.inbox.close_airbnb_session", AsyncMock()), \
+         patch("app.inbox.airbnb_page", _fake_page), \
          patch("app.inbox.send_reply_on_page", AsyncMock()):
         _run_worker_until_idle(worker)
 
@@ -265,9 +272,7 @@ def test_retrying_an_outreach_job_never_sends_twice(db):
     send = AsyncMock(return_value=("T900", ""))
     with patch("app.agent.scribe.get_llm", return_value=_llm(_OUTREACH_TEXT)), patch(
         "app.outreach._send_message_to_host", send
-    ), patch("app.agent.scribe.open_airbnb_browser", AsyncMock(
-        return_value=(MagicMock(), MagicMock(), None, False)
-    )), patch("app.agent.scribe.close_airbnb_session", AsyncMock()):
+    ), patch("app.agent.scribe.airbnb_page", _fake_page):
         asyncio.run(send_outreach_for_lead(lead_id, db_path=db))
         second = asyncio.run(send_outreach_for_lead(lead_id, db_path=db))
 
@@ -295,9 +300,7 @@ def test_kill_switch_mid_campaign_stops_the_next_send(db):
     send = AsyncMock(return_value=("T900", ""))
     with patch("app.agent.scribe.get_llm", return_value=_llm(_OUTREACH_TEXT)), patch(
         "app.outreach._send_message_to_host", send
-    ), patch("app.agent.scribe.open_airbnb_browser", AsyncMock(
-        return_value=(MagicMock(), MagicMock(), None, False)
-    )), patch("app.agent.scribe.close_airbnb_session", AsyncMock()):
+    ), patch("app.agent.scribe.airbnb_page", _fake_page):
         result = asyncio.run(send_outreach_for_lead(lead_id, db_path=db))
 
     assert result["status"] == "blocked"
@@ -328,23 +331,19 @@ def test_a_frozen_dry_run_resumes_cleanly(db):
     patches = lambda: (
         patch("app.agent.scribe.get_llm", return_value=_llm(_OUTREACH_TEXT)),
         patch("app.outreach._send_message_to_host", send),
-        patch(
-            "app.agent.scribe.open_airbnb_browser",
-            AsyncMock(return_value=(MagicMock(), MagicMock(), None, False)),
-        ),
-        patch("app.agent.scribe.close_airbnb_session", AsyncMock()),
+        patch("app.agent.scribe.airbnb_page", _fake_page),
     )
 
     policy_mod.freeze_sending("dry run", db)
     p = patches()
-    with p[0], p[1], p[2], p[3]:
+    with p[0], p[1], p[2]:
         dry = asyncio.run(send_outreach_for_lead(lead_id, db_path=db))
     assert dry["status"] == "blocked"
     assert send.await_count == 0
 
     policy_mod.resume_sending(db)
     p = patches()
-    with p[0], p[1], p[2], p[3]:
+    with p[0], p[1], p[2]:
         live = asyncio.run(send_outreach_for_lead(lead_id, db_path=db))
 
     assert live["status"] == "sent"

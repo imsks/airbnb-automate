@@ -13,10 +13,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional, Tuple
 
-from playwright.async_api import Browser, BrowserContext, Page, Playwright
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Playwright,
+    async_playwright,
+)
 
 from app.config import (
     get_browser_state_path,
@@ -162,6 +169,24 @@ async def close_airbnb_session(
             await browser.close()
         except Exception:  # pragma: no cover
             pass
+
+
+@asynccontextmanager
+async def airbnb_page(headless: bool = True):
+    """Yield a logged-in Airbnb page, closing everything afterwards.
+
+    ``open_airbnb_browser`` needs a live Playwright instance, and forgetting to
+    wrap it is an easy mistake that only shows up at runtime. Callers that just
+    want "a page" should use this instead.
+    """
+    async with async_playwright() as pw:
+        context, page, browser, uses_cdp = await open_airbnb_browser(
+            pw, headless=headless
+        )
+        try:
+            yield page
+        finally:
+            await close_airbnb_session(context, browser, uses_cdp=uses_cdp)
 
 
 async def flush_profile_after_login(context: BrowserContext) -> None:

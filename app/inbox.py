@@ -18,7 +18,7 @@ from typing import Optional
 from app import deals as deal_repo
 from app import territories as territory_repo
 from app.agent.chat_reader import fetch_inbox_chats
-from app.browser_session import close_airbnb_session, open_airbnb_browser
+from app.browser_session import airbnb_page
 from app.config import get_airbnb_base_url
 from app.models import DealState, MessageStatus
 from app.send_budget import Channel, reserved_send
@@ -231,10 +231,10 @@ async def send_reply(
     if staged.status is not MessageStatus.PENDING:
         return {"deal_id": deal_id, "status": staged.status.value, "sent": False}
 
-    context, page, browser, uses_cdp = await open_airbnb_browser(headless=headless)
     try:
-        async with reserved_send(Channel.NEGOTIATION, db_path):
-            await send_reply_on_page(page, deal.thread_id, staged.body)
+        async with airbnb_page(headless=headless) as page:
+            async with reserved_send(Channel.NEGOTIATION, db_path):
+                await send_reply_on_page(page, deal.thread_id, staged.body)
         deal_repo.mark_message_sent(message_id, db_path)
         if deal.territory_id:
             territory_repo.record_send(deal.territory_id, db_path)
@@ -243,5 +243,3 @@ async def send_reply(
     except Exception as exc:
         deal_repo.mark_message_failed(message_id, str(exc), db_path)
         raise
-    finally:
-        await close_airbnb_session(context, browser, uses_cdp)

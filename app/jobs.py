@@ -243,10 +243,15 @@ def fail(job_id: int, error: str, db_path: Optional[str] = None) -> JobStatus:
 
         if row["attempts"] >= row["max_attempts"]:
             new_status = JobStatus.FAILED
+            # Release the key. It exists to stop duplicate *queued* work, not to
+            # poison a lead forever — without this, a job that failed under a bug
+            # can never be retried once the bug is fixed. Double sends are
+            # prevented separately by messages.idempotency_key.
             conn.execute(
                 """UPDATE jobs
                       SET status = ?, last_error = ?, lease_until = NULL,
-                          lease_owner = '', updated_at = CURRENT_TIMESTAMP
+                          lease_owner = '', idempotency_key = NULL,
+                          updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?""",
                 (new_status.value, error[:2000], job_id),
             )
@@ -283,6 +288,27 @@ def cancel(job_id: int, reason: str = "", db_path: Optional[str] = None) -> None
             (JobStatus.CANCELLED.value, reason[:2000], job_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def retry_failed(job_type: Optional[str] = None, db_path: Optional[str] = None) -> int:
+    """Put terminally-failed jobs back in the queue. Returns how many were reset."""
+    conn = get_connection(db_path)
+    try:
+        sql = (
+            "UPDATE jobs SET status = ?, attempts = 0, run_after = 0, "
+            "last_error = '', updated_at = CURRENT_TIMESTAMP WHERE status = ?"
+        )
+        params: list[Any] = [JobStatus.PENDING.value, JobStatus.FAILED.value]
+        if job_type:
+            sql += " AND type = ?"
+            params.append(job_type)
+        cursor = conn.execute(sql, params)
+        conn.commit()
+        if cursor.rowcount:
+            logger.info("Requeued %d failed job(s)", cursor.rowcount)
+        return cursor.rowcount
     finally:
         conn.close()
 

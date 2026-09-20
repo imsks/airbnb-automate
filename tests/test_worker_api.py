@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -149,6 +149,87 @@ def test_sweeper_leaves_deals_that_got_a_reply(db):
 
 
 # --- Planner ---------------------------------------------------------------
+
+
+def test_discovery_persists_scraped_listings_as_leads(db):
+    """The scrape is the expensive half; dropping the results on the floor is
+    the failure this guards against."""
+    import asyncio
+
+    from app.models import Listing
+
+    territory_id = territory_repo.upsert_territory("Gokarna, Karnataka", db_path=db)
+    scraped = [
+        Listing(id="R1", title="Cliff House", host_name="Asha", location="Gokarna"),
+        Listing(id="R2", title="Beach Hut", host_name="Ravi", location="Gokarna"),
+    ]
+
+    worker = Worker(db_path=db)
+    job = MagicMock()
+    job.payload = {"campaign_id": 0, "territory_id": territory_id}
+
+    with patch("app.scraper.scrape_listings", AsyncMock(return_value=scraped)):
+        result = asyncio.run(worker._discover_leads(job))
+
+    assert result["leads"] == 2
+    listing_ids = {l.listing_id for l in lead_repo.leads_needing_enrichment(db_path=db)}
+    assert listing_ids == {"R1", "R2"}
+    assert territory_repo.get_territory(territory_id, db).leads_discovered == 2
+
+
+def test_discovery_on_an_unknown_territory_is_skipped(db):
+    import asyncio
+
+    worker = Worker(db_path=db)
+    job = MagicMock()
+    job.payload = {"campaign_id": 0, "territory_id": 9999}
+    assert asyncio.run(worker._discover_leads(job)) == {"skipped": "territory missing"}
+
+
+def test_a_blocking_handler_does_not_stall_the_event_loop(db):
+    """The API shares a loop with the worker under `manage.py start`. A 13s
+    blocking LLM call must not make the dashboard unreachable."""
+    import asyncio
+    import time as _time
+
+    jobs.enqueue(JobType.SWEEP_STALE, db_path=db)
+    worker = Worker(db_path=db)
+    worker._last_tick = 9e18
+    worker._handlers[JobType.SWEEP_STALE] = lambda job: _time.sleep(0.4) or {}
+
+    async def scenario():
+        heartbeats = 0
+
+        async def pulse():
+            nonlocal heartbeats
+            while True:
+                await asyncio.sleep(0.05)
+                heartbeats += 1
+
+        ticker = asyncio.create_task(pulse())
+        leased = jobs.lease(worker.name, limit=1, db_path=worker.db_path)
+        await worker._execute(leased[0])
+        ticker.cancel()
+        return heartbeats
+
+    # A blocked loop would leave this at 0; off-loop execution keeps it ticking.
+    assert asyncio.run(scenario()) >= 3
+
+
+def test_async_handlers_still_run_on_the_loop(db):
+    import asyncio
+
+    job_id = jobs.enqueue(JobType.SYNC_INBOX, db_path=db)
+    worker = Worker(db_path=db)
+    worker._last_tick = 9e18
+
+    async def handler(job):
+        await asyncio.sleep(0)
+        return {"threads": 0}
+
+    worker._handlers[JobType.SYNC_INBOX] = handler
+    _run(worker)
+    assert jobs.get_job(job_id, db).result == {"threads": 0}
 
 
 def test_planner_queues_research_for_new_territories(db):

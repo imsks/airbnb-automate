@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Optional
 
-from app.browser_session import close_airbnb_session, open_airbnb_browser
+from app.browser_session import airbnb_page
 from app.config import get_airbnb_base_url
 
 logger = logging.getLogger(__name__)
@@ -186,8 +186,5 @@ async def scrape_detail_on_page(page, url: str) -> dict:
 
 async def scrape_listing_detail(listing_id: str, url: str = "", headless: bool = True) -> dict:
     """Open a browser, enrich one listing, and close it again."""
-    context, page, browser, uses_cdp = await open_airbnb_browser(headless=headless)
-    try:
+    async with airbnb_page(headless=headless) as page:
         return await scrape_detail_on_page(page, listing_url_for(listing_id, url))
-    finally:
-        await close_airbnb_session(context, browser, uses_cdp)

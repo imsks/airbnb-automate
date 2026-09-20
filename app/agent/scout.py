@@ -57,10 +57,14 @@ Judge a destination on:
 Be honest and specific. A place that is wonderful in October and miserable in
 July must score accordingly. Do not flatter destinations.
 
-Reply with JSON only, no markdown fence:
+Reply with JSON only, no markdown fence. `seasonality` MUST contain all twelve
+months as lowercase keys — a month you omit is treated as unvisitable:
 {
   "summary": "<two sentences>",
-  "seasonality": {"january": 0.0-1.0, ..., "december": 0.0-1.0},
+  "seasonality": {"january": 0.0, "february": 0.0, "march": 0.0, "april": 0.0,
+                  "may": 0.0, "june": 0.0, "july": 0.0, "august": 0.0,
+                  "september": 0.0, "october": 0.0, "november": 0.0,
+                  "december": 0.0},
   "connectivity_score": 0.0-1.0,
   "connectivity_note": "<one sentence>",
   "content_score": 0.0-1.0,
@@ -157,13 +161,22 @@ def research_territory(
     )
     save_profile(profile, ttl_days=PROFILE_TTL_DAYS, db_path=db_path)
 
-    best = max(payload["seasonality"].items(), key=lambda kv: kv[1])
+    seasonality = payload["seasonality"]
+    covered = sum(1 for v in seasonality.values() if v > 0)
+    if covered < 6:
+        logger.warning(
+            "🔭 %s: only %d/12 months scored — the Router will skip the rest",
+            name,
+            covered,
+        )
+
+    top = sorted(seasonality.items(), key=lambda kv: -kv[1])[:3]
     logger.info(
-        "🔭 %s: best month %s (%.2f), connectivity %.2f, cost %s",
+        "🔭 %s · best %s · wifi %.0f%% · content %.0f%% · cost %s",
         name,
-        best[0],
-        best[1],
-        payload["connectivity_score"],
+        ", ".join(f"{m[:3]} {v:.2f}" for m, v in top),
+        payload["connectivity_score"] * 100,
+        payload["content_score"] * 100,
         payload["cost_band"] or "?",
     )
     return profile
