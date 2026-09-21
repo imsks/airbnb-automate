@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
+import sqlite3
+import time
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -33,6 +36,7 @@ KEY_ALLOWED_DELIVERABLES = "allowed_deliverables"
 KEY_MAX_AGENT_REPLIES = "max_agent_replies_per_thread"
 KEY_CREDENTIAL_FACTS = "credential_facts"
 KEY_ALLOW_OFF_PLATFORM = "allow_off_platform_contact"
+KEY_SINGLE_SEND = "single_message_authorization"
 
 
 class GuardrailPolicy(BaseModel):
@@ -107,24 +111,110 @@ def sending_enabled(db_path: Optional[str] = None) -> bool:
     """The kill switch, read fresh. Call immediately before every send."""
     conn = get_connection(db_path)
     try:
+        if _get_raw(conn, KEY_SINGLE_SEND) is not None:
+            return False
         raw = _get_raw(conn, KEY_SENDING_ENABLED)
     finally:
         conn.close()
     if raw is None:
         return True
     try:
-        return bool(json.loads(raw))
+        return json.loads(raw) is True
     except json.JSONDecodeError:
         return False
 
 
 def freeze_sending(reason: str = "", db_path: Optional[str] = None) -> None:
     """Stop all outbound messages immediately."""
-    set_policy_value(KEY_SENDING_ENABLED, False, db_path)
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO policy(key, value) VALUES (?, 'false') "
+                "ON CONFLICT(key) DO UPDATE SET value = 'false', updated_at = CURRENT_TIMESTAMP",
+                (KEY_SENDING_ENABLED,),
+            )
+            conn.execute("DELETE FROM policy WHERE key = ?", (KEY_SINGLE_SEND,))
+    finally:
+        conn.close()
     logger.warning("KILL SWITCH ENGAGED — all sending frozen. %s", reason)
 
 
 def resume_sending(db_path: Optional[str] = None) -> None:
     """Re-enable outbound messages."""
+    conn = get_connection(db_path)
+    try:
+        if _get_raw(conn, KEY_SINGLE_SEND) is not None:
+            raise ValueError("A single-message test is active; the bulk queue cannot be resumed.")
+    finally:
+        conn.close()
     set_policy_value(KEY_SENDING_ENABLED, True, db_path)
     logger.warning("Sending resumed")
+
+
+def authorize_single_message(message_id: int, db_path: Optional[str] = None) -> str:
+    """Permit one submission of one stored message while bulk sending stays frozen."""
+    token = secrets.token_urlsafe(32)
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT status, direction FROM messages WHERE id = ?", (message_id,)).fetchone()
+            if row is None or row["direction"] != "outbound":
+                raise ValueError("Select an existing outbound message.")
+            if row["status"] in ("sending", "sent"):
+                raise ValueError("This message may already have been submitted; inspect its thread first.")
+            if _get_raw(conn, KEY_SINGLE_SEND) is not None:
+                raise ValueError("Another single-message test is active.")
+            grant = {"message_id": message_id, "token": token, "claimed": False, "expires_at": time.time() + 600}
+            conn.execute(
+                "INSERT INTO policy(key,value) VALUES (?, 'false') "
+                "ON CONFLICT(key) DO UPDATE SET value = 'false', updated_at = CURRENT_TIMESTAMP",
+                (KEY_SENDING_ENABLED,),
+            )
+            conn.execute("INSERT INTO policy(key,value) VALUES (?, ?)", (KEY_SINGLE_SEND, json.dumps(grant)))
+    finally:
+        conn.close()
+    logger.info("[authorization] Only message #%s may be submitted once; bulk sending stays frozen.", message_id)
+    return token
+
+
+def _single_message_grant(conn: sqlite3.Connection, message_id: Optional[int], token: Optional[str]) -> Optional[dict]:
+    if message_id is None or not token:
+        return None
+    try:
+        grant = json.loads(_get_raw(conn, KEY_SINGLE_SEND) or "null")
+        if (
+            isinstance(grant, dict)
+            and grant.get("message_id") == message_id
+            and grant.get("claimed") is False
+            and grant.get("expires_at", 0) > time.time()
+            and secrets.compare_digest(grant.get("token", ""), token)
+        ):
+            return grant
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def single_message_authorized(message_id: Optional[int], token: Optional[str], db_path: Optional[str] = None) -> bool:
+    conn = get_connection(db_path)
+    try:
+        return _single_message_grant(conn, message_id, token) is not None
+    finally:
+        conn.close()
+
+
+def claim_send_permission(conn: sqlite3.Connection, message_id: int, token: Optional[str]) -> None:
+    """Check permission in the same transaction that records the submission attempt."""
+    if token:
+        grant = _single_message_grant(conn, message_id, token)
+        if grant is None:
+            raise PermissionError("Single-message authorization expired, was revoked, or was already used.")
+        grant["claimed"] = True
+        conn.execute("UPDATE policy SET value = ? WHERE key = ?", (json.dumps(grant), KEY_SINGLE_SEND))
+        return
+    if _get_raw(conn, KEY_SINGLE_SEND) is not None:
+        raise PermissionError("Bulk sending is paused for a single-message test.")
+    if json.loads(_get_raw(conn, KEY_SENDING_ENABLED) or "true") is not True:
+        raise PermissionError("Sending was frozen before the final Send action.")

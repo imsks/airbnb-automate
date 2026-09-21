@@ -17,9 +17,9 @@ CLEAN_DRAFT = """Hi Asha!
 
 Your place in Goa looks wonderful. I'm Sachin, a remote engineer and founder of
 The Boring Education, and I create travel content for an audience of 150k+
-followers across @theboringfounder and @theboringeducation.
+followers.
 
-I'd love to stay with you in exchange for content: 2 Instagram reels, 10 edited
+I'd love to stay with you in exchange for content: 2 IG reels, 10 edited
 photos and 1 honest public review. I'm flexible on timing and could come any
 time in the November to December window.
 
@@ -52,7 +52,7 @@ def pol():
         currency="INR",
         allow_specific_dates=False,
         allowed_deliverables=[
-            "2 Instagram reels",
+            "2 IG reels",
             "10 edited photos",
             "1 honest public review",
         ],
@@ -90,6 +90,69 @@ def test_month_only_window_is_not_a_specific_date(pol):
     assert verdict.allowed, verdict.reason
 
 
+# --- Terms Airbnb refuses to deliver ----------------------------------------
+
+
+def test_platform_name_is_blocked_before_a_send_is_attempted(pol):
+    """Airbnb rejected a real draft for this exact word; catch it locally."""
+    body = CLEAN_DRAFT.replace("2 IG reels", "2 Instagram reels")
+    verdict = _review(body, pol)
+    assert not verdict.allowed
+    assert _rules(verdict) == {Rule.PLATFORM_TERMS}
+    assert "IG" in verdict.reason
+
+
+def test_blocked_platform_name_is_matched_regardless_of_case(pol):
+    verdict = _review(CLEAN_DRAFT.replace("2 IG reels", "2 INSTAGRAM reels"), pol)
+    assert not verdict.allowed
+    assert Rule.PLATFORM_TERMS in _rules(verdict)
+
+
+def test_a_blocked_term_alone_is_fixable_by_rewriting(pol):
+    """Wording problems get rewritten; they must not burn a human's attention."""
+    verdict = _review(CLEAN_DRAFT.replace("2 IG reels", "2 Instagram reels"), pol)
+    assert verdict.revisable_only is True
+
+
+def test_a_real_violation_is_never_treated_as_merely_revisable(pol):
+    verdict = _review(
+        "Instagram reels for you — text me on +91 98765 43210 to sort it out.", pol
+    )
+    assert _rules(verdict) >= {Rule.PLATFORM_TERMS, Rule.CONTACT_INFO}
+    assert verdict.revisable_only is False
+
+
+def test_a_clean_draft_is_not_revisable(pol):
+    assert _review(CLEAN_DRAFT, pol).revisable_only is False
+
+
+def test_blocked_terms_are_configurable(pol, monkeypatch):
+    monkeypatch.setenv("BLOCKED_MESSAGE_TERMS", "goa=")
+    verdict = _review(CLEAN_DRAFT, pol)
+    assert not verdict.allowed
+    assert Rule.PLATFORM_TERMS in _rules(verdict)
+    assert "remove it" in verdict.reason
+
+
+def test_a_substring_of_a_longer_word_is_not_a_blocked_term(pol, monkeypatch):
+    monkeypatch.setenv("BLOCKED_MESSAGE_TERMS", "gram=")
+    assert _review("I shoot on 35mm and love a good programme.", pol).allowed
+
+
+def test_a_handle_can_be_blocked_when_configured(pol, monkeypatch):
+    """Airbnb withheld a real message for naming accounts, so handles are out."""
+    verdict = _review(CLEAN_DRAFT.replace("followers.", "followers on @theboringfounder."), pol)
+    assert not verdict.allowed
+    assert _rules(verdict) == {Rule.PLATFORM_TERMS}
+    assert verdict.revisable_only is True
+
+
+def test_naming_an_account_is_allowed_once_a_reservation_exists(pol, monkeypatch):
+    monkeypatch.setenv("ALLOW_HANDLES_BEFORE_BOOKING", "true")
+    body = CLEAN_DRAFT.replace("followers.", "followers on @theboringfounder.")
+    assert _review(body, pol).allowed
+
+
 def test_quoting_the_hosts_price_without_agreeing_is_allowed(pol):
     """'your place at X' is the host's number, not a commitment."""
     verdict = _review(
@@ -103,9 +166,11 @@ def test_approved_deliverables_at_the_cap_are_allowed(pol):
     assert verdict.allowed, verdict.reason
 
 
-def test_whitelisted_handles_are_allowed(pol):
+def test_a_whitelisted_handle_is_still_withheld_by_airbnb(pol):
+    """The fact sheet permits these, but Airbnb refuses to deliver them."""
     verdict = _review("You can see my work at @theboringfounder.", pol)
-    assert verdict.allowed, verdict.reason
+    assert not verdict.allowed
+    assert _rules(verdict) == {Rule.PLATFORM_TERMS}
 
 
 # --- Red team: contact info & off-platform ---------------------------------

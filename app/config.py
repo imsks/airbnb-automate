@@ -170,3 +170,43 @@ def get_follower_claim_ceiling() -> int:
         return 0
     value = int(digits)
     return value * 1000 if "k" in facts else value
+
+
+#: Airbnb refuses links, contact details and social-platform names until a
+#: reservation exists. Values are what to write instead ("" when nothing fits).
+_DEFAULT_BLOCKED_TERMS = {
+    "instagram": "IG",
+    "facebook": "FB",
+    "tiktok": "",
+    "youtube": "",
+    "snapchat": "",
+    "linkedin": "",
+    "twitter": "",
+}
+
+
+def get_allow_handles_before_booking() -> bool:
+    """Whether to name social handles before a reservation exists.
+
+    Off by default: Airbnb's off-platform filter withheld a real message for
+    naming them, even though its earlier notice objected only to "Instagram".
+    """
+    raw = (os.getenv("ALLOW_HANDLES_BEFORE_BOOKING") or "").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def get_blocked_message_terms() -> dict:
+    """Words Airbnb strips out of a first message, mapped to safe substitutes.
+
+    Entries may be handles or phrases too (e.g. ``@myhandle=``), should Airbnb
+    widen what it refuses; the Warden matches them literally.
+    """
+    raw = (os.getenv("BLOCKED_MESSAGE_TERMS") or "").strip()
+    if not raw:
+        return dict(_DEFAULT_BLOCKED_TERMS)
+    terms = {}
+    for entry in raw.split(","):
+        term, _, replacement = entry.partition("=")
+        if term.strip():
+            terms[term.strip().lower()] = replacement.strip()
+    return terms

@@ -206,6 +206,23 @@ def anomalies(db_path: Optional[str] = None) -> list[str]:
     return alerts
 
 
+def recent_messages(db_path: Optional[str] = None) -> list[dict]:
+    """Show the actual stored drafts and delivery outcomes, including failed attempts."""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT m.id, m.deal_id, m.body, m.status, m.error, m.blocked_reason,
+                      m.prompt_version, m.sent_at, d.host_name, d.place_name, d.location,
+                      d.thread_id, d.thread_url
+                 FROM messages m JOIN deals d ON d.id = m.deal_id
+                WHERE m.direction = 'outbound' AND m.agent != ''
+                ORDER BY m.id DESC LIMIT 20"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def daily_brief(db_path: Optional[str] = None) -> dict:
     """Everything the dashboard shows, assembled in one pass."""
     brief = {
@@ -219,6 +236,7 @@ def daily_brief(db_path: Optional[str] = None) -> dict:
         "jobs": jobs.queue_depth(db_path),
         "cost_by_agent": cost_by_agent(db_path),
         "prompt_performance": reply_rate_by_prompt_version(db_path),
+        "messages": recent_messages(db_path),
     }
     logger.debug(
         "📰 Brief: %d ready to book, %d need a human, %d anomaly(ies)",

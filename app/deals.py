@@ -524,7 +524,7 @@ def mark_message_sent(message_id: int, db_path: Optional[str] = None) -> None:
     try:
         now = _now_iso()
         conn.execute(
-            "UPDATE messages SET status = ?, sent_at = ?, error = '' WHERE id = ?",
+            "UPDATE messages SET status = ?, sent_at = ?, error = '', blocked_reason = '' WHERE id = ?",
             (MessageStatus.SENT.value, now, message_id),
         )
         conn.execute(
@@ -544,7 +544,7 @@ def mark_message_failed(
     conn = get_connection(db_path)
     try:
         conn.execute(
-            "UPDATE messages SET status = ?, error = ? WHERE id = ?",
+            "UPDATE messages SET status = ?, error = ? WHERE id = ? AND status != 'sent'",
             (MessageStatus.FAILED.value, error[:2000], message_id),
         )
         conn.commit()
@@ -559,10 +559,93 @@ def mark_message_blocked(
     conn = get_connection(db_path)
     try:
         conn.execute(
-            "UPDATE messages SET status = ?, blocked_reason = ? WHERE id = ?",
+            "UPDATE messages SET status = ?, blocked_reason = ? WHERE id = ? AND status NOT IN ('sent', 'sending')",
             (MessageStatus.BLOCKED.value, reason[:2000], message_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_message(message_id: int, db_path: Optional[str] = None) -> Optional[Message]:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        return _row_to_message(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_message_by_key(key: str, db_path: Optional[str] = None) -> Optional[Message]:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT * FROM messages WHERE idempotency_key = ?", (key,)).fetchone()
+        return _row_to_message(row) if row else None
+    finally:
+        conn.close()
+
+
+def begin_message_delivery(
+    message_id: int, body: str, db_path: Optional[str] = None, *, authorization: Optional[str] = None
+) -> None:
+    """Persist a non-retriable attempt immediately before clicking Send."""
+    from app.policy import claim_send_permission
+
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            if row is None or row["direction"] != "outbound" or row["body"] != body:
+                raise ValueError("The submitted text must match the stored outbound draft.")
+            if row["status"] in ("sending", "sent"):
+                raise ValueError("Message already submitted or awaiting verification; refusing another click.")
+            if row["kind"] == "outreach":
+                existing = conn.execute(
+                    """SELECT m.id FROM messages m JOIN deals d ON d.id = m.deal_id
+                       WHERE d.listing_id = (SELECT listing_id FROM deals WHERE id = ?)
+                         AND m.id != ? AND m.direction = 'outbound'
+                         AND m.status IN ('sending', 'sent') LIMIT 1""",
+                    (row["deal_id"], message_id),
+                ).fetchone()
+                if existing:
+                    raise ValueError("This listing already has a submitted message; refusing duplicate outreach.")
+            claim_send_permission(conn, message_id, authorization)
+            conn.execute(
+                "UPDATE messages SET status = 'sending', error = 'Submission started; verify before retrying', "
+                "blocked_reason = '' WHERE id = ?",
+                (message_id,),
+            )
+    finally:
+        conn.close()
+
+
+def mark_message_unconfirmed(message_id: int, reason: str, db_path: Optional[str] = None) -> None:
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE messages SET status = 'sending', error = ? WHERE id = ? AND status != 'sent'",
+                (reason[:2000], message_id),
+            )
+    finally:
+        conn.close()
+
+
+def mark_message_rejected(message_id: int, reason: str, db_path: Optional[str] = None) -> None:
+    """Airbnb vetted the draft and refused it, so nothing was delivered.
+
+    Unlike an unconfirmed send this is safe to roll back: the idempotency key is
+    released so the Scribe can compose fresh wording for the same listing.
+    """
+    conn = get_connection(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE messages SET status = 'failed', error = ?, idempotency_key = NULL "
+                "WHERE id = ? AND status != 'sent'",
+                (reason[:2000], message_id),
+            )
     finally:
         conn.close()
 

@@ -86,7 +86,7 @@ def _policy(**kwargs):
     base = dict(
         max_price_per_night=0.0,
         currency="INR",
-        allowed_deliverables=["2 Instagram reels", "10 edited photos"],
+        allowed_deliverables=["2 IG reels", "10 edited photos"],
         max_agent_replies_per_thread=4,
         credential_facts={
             "name": "Sachin Shukla",
@@ -102,9 +102,12 @@ def _policy(**kwargs):
 def test_guardrail_block_states_a_free_only_rule():
     text = guardrail_block(_policy())
     assert "Never agree to pay anything" in text
-    assert "2 Instagram reels" in text
-    assert "@theboringfounder" in text
+    assert "2 IG reels" in text
     assert "150k+ combined" in text
+
+
+def test_guardrail_block_never_asks_for_a_handle_airbnb_would_withhold():
+    assert "@theboringfounder" not in guardrail_block(_policy())
 
 
 def test_guardrail_block_states_a_ceiling_when_one_is_set():

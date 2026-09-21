@@ -21,6 +21,7 @@ from app.database import get_connection, init_db
 from app.listing_detail import (
     detect_long_stay_discount,
     listing_url_for,
+    parse_host_name,
     parse_listing_age_months,
     parse_response_rate,
 )
@@ -122,6 +123,27 @@ def test_top_unsent_leads_skips_contacted_deals(db, monkeypatch):
 def test_listing_url_prefers_the_known_url():
     assert listing_url_for("123", "https://x/rooms/123") == "https://x/rooms/123"
     assert listing_url_for("123").endswith("/rooms/123")
+
+
+def test_host_name_comes_from_listing_control():
+    assert parse_host_name("Learn more about the host, Peggy.") == "Peggy"
+    assert parse_host_name("Learn more about the host, Anjali & Dev.") == "Anjali & Dev"
+    assert parse_host_name("Meet your host") == ""
+
+
+def test_enrichment_updates_listing_and_existing_deal(db):
+    from app.deals import get_deal, upsert_deal
+    from app.database import get_listings
+
+    lead_id = lead_repo.upsert_lead("L1")
+    deal_id = upsert_deal("L1", db_path=db)
+    lead_repo.save_enrichment(lead_id, {"host_name": "Peggy", "title": "Garden room"})
+    listing = next(row for row in get_listings(1, db) if row.id == "L1")
+    assert listing.host_name == "Peggy"
+    assert listing.title == "Garden room"
+    assert get_deal(deal_id, db).host_name == "Peggy"
+    lead_repo.save_enrichment(lead_id, {"description": "A garden"})
+    assert get_deal(deal_id, db).host_name == "Peggy"
 
 
 @pytest.mark.parametrize(

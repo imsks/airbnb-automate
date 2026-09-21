@@ -234,6 +234,43 @@ def cmd_resume(args) -> int:
     return 0
 
 
+def cmd_send_one(args) -> int:
+    """Preview or submit one lead's message without starting the worker."""
+    import asyncio
+
+    from app.agent.scribe import prepare_outreach, send_outreach_for_lead
+    from app.messaging_errors import ComposerUnavailable, DeliveryUnconfirmed, SessionExpired
+    from app.send_budget import SendingFrozen
+
+    db_path = get_db_path()
+    policy_mod.freeze_sending("Single-message test; all other sends remain paused", db_path)
+    try:
+        draft = prepare_outreach(args.lead, preview=True, db_path=db_path)
+        if draft["status"] != "ready":
+            print(f"No new submission: {draft['status']} — {draft.get('reason', 'inspect the saved message')}")
+            return 1
+        if not args.send:
+            print(f"Preview saved as message #{draft['message_id']}. Nothing was sent.")
+            return 0
+        authorization = policy_mod.authorize_single_message(draft["message_id"], db_path)
+        result = asyncio.run(send_outreach_for_lead(
+            args.lead, headless=args.headless, db_path=db_path, authorization=authorization
+        ))
+        print(json.dumps(result, indent=2))
+        return 0 if result["status"] == "sent" else 1
+    except SessionExpired as exc:
+        logger.error("[not sent] %s", exc)
+        return 1
+    except DeliveryUnconfirmed as exc:
+        logger.error("[verification required] %s", exc)
+        return 2
+    except (ComposerUnavailable, SendingFrozen, PermissionError, ValueError) as exc:
+        logger.error("[stopped] %s", exc)
+        return 1
+    finally:
+        policy_mod.freeze_sending("Single-message test finished; bulk sending remains paused", db_path)
+
+
 def cmd_itinerary(args) -> int:
     from app import territories as territory_repo
 
@@ -314,6 +351,12 @@ def build_parser() -> argparse.ArgumentParser:
     freeze.set_defaults(func=cmd_freeze)
 
     sub.add_parser("resume", help="re-enable sending").set_defaults(func=cmd_resume)
+
+    send_one = sub.add_parser("send-one", help="preview or send exactly one lead's message; keep bulk paused")
+    send_one.add_argument("--lead", required=True, type=int)
+    send_one.add_argument("--send", action="store_true", help="authorize one real submission, then freeze")
+    send_one.add_argument("--headless", action="store_true")
+    send_one.set_defaults(func=cmd_send_one)
     return parser
 
 

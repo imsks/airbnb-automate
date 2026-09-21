@@ -74,6 +74,11 @@ def _clean(text: str, limit: int) -> str:
     return collapsed[:limit]
 
 
+def parse_host_name(label: str) -> str:
+    match = re.fullmatch(r"Learn more about the host,\s*(.+?)\.?", label.strip(), re.I)
+    return match.group(1).strip() if match else ""
+
+
 async def _text_of(page, selectors: tuple[str, ...], limit: int) -> str:
     for selector in selectors:
         try:
@@ -116,6 +121,15 @@ async def scrape_detail_on_page(page, url: str) -> dict:
         await page.wait_for_load_state("load", timeout=30_000)
     except Exception:
         pass
+
+    host_control = page.locator('button[aria-label^="Learn more about the host,"]')
+    host_name = ""
+    try:
+        await host_control.first.wait_for(state="visible", timeout=10000)
+        host_name = parse_host_name(await host_control.first.get_attribute("aria-label") or "")
+    except Exception:
+        pass
+    title = await _text_of(page, ("h1",), 300)
 
     description = await _text_of(
         page,
@@ -171,6 +185,8 @@ async def scrape_detail_on_page(page, url: str) -> dict:
         body_text = ""
 
     return {
+        "host_name": host_name,
+        "title": title,
         "description": description,
         "house_rules": house_rules,
         "amenities": amenities,

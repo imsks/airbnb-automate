@@ -17,13 +17,15 @@ import logging
 import re
 from difflib import SequenceMatcher
 from typing import Optional, Sequence
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from app.models import Deal
 
 logger = logging.getLogger(__name__)
 
-_THREAD_URL_RE = re.compile(r"/(?:messages|hosting/messages)/thread/(\d+)")
-_THREAD_QUERY_RE = re.compile(r"[?&]thread_id=(\d+)")
+_THREAD_URL_RE = re.compile(
+    r"^/(?:hosting/|guest/)?(?:(?:messages|messaging)/(?:thread/)?|inbox/)(\d+)(?:/|$)"
+)
 
 #: Below this, a fuzzy match is treated as no match at all.
 MATCH_THRESHOLD = 0.72
@@ -35,10 +37,13 @@ def extract_thread_id(url: str) -> Optional[str]:
     """Pull the thread id out of an Airbnb messaging URL."""
     if not url:
         return None
-    for pattern in (_THREAD_URL_RE, _THREAD_QUERY_RE):
-        match = pattern.search(url)
-        if match:
-            return match.group(1)
+    parsed = urlsplit(url)
+    match = _THREAD_URL_RE.match(parsed.path)
+    if match:
+        return match.group(1)
+    thread_id = parse_qs(parsed.query).get("thread_id", [""])[0]
+    if thread_id.isdigit():
+        return thread_id
     return None
 
 
@@ -59,14 +64,14 @@ async def capture_thread_reference(page) -> tuple[Optional[str], str]:
         return thread_id, current
 
     try:
-        href = await page.evaluate(
-            """() => {
-                const a = document.querySelector(
-                    'a[href*="/messages/thread/"], a[href*="/hosting/messages/thread/"]'
-                );
-                return a ? a.href : '';
-            }"""
+        links = page.get_by_role(
+            "link", name=re.compile(r"^(?:View (?:conversation|message|thread)|Go to (?:conversation|messages))$", re.I)
         )
+        if await links.count() != 1 or not await links.first.is_visible():
+            return None, ""
+        href = urljoin(current, await links.first.get_attribute("href") or "")
+        if urlsplit(href).netloc != urlsplit(current).netloc:
+            return None, ""
     except Exception:
         return None, ""
 

@@ -17,7 +17,9 @@ the send budget. This module only drives the browser.
 import asyncio
 import logging
 import re
-from typing import Optional
+import time
+from typing import Awaitable, Callable, Optional
+from urllib.parse import urlsplit
 
 from playwright.async_api import (
     async_playwright,
@@ -33,6 +35,12 @@ from app.browser_session import (
     save_storage_state,
 )
 from app.config import get_airbnb_base_url
+from app.messaging_errors import (
+    ComposerUnavailable,
+    DeliveryUnconfirmed,
+    MessageRejected,
+    SessionExpired,
+)
 from app.models import Listing
 from app.thread_linking import capture_thread_reference
 
@@ -140,6 +148,15 @@ async def _is_logged_in(page: Page) -> bool:
     """Detect logged-in state (DOM + session cookies; Airbnb often hides nav until slow JS)."""
     if page.is_closed():
         return False
+    hostname = urlsplit(page.url).hostname or ""
+    if hostname not in (urlsplit(_airbnb_origin()).hostname, "www.airbnb.com", "www.airbnb.co.in"):
+        return False
+    try:
+        await _raise_if_login_required(page)
+    except SessionExpired:
+        return False
+    if await page.get_by_role("button", name=re.compile(r"^Log in or sign up$", re.I)).count():
+        return False
     for _ in range(3):
         try:
             if await page.query_selector(_PROFILE_SELECTORS):
@@ -149,8 +166,6 @@ async def _is_logged_in(page: Page) -> bool:
                 return False
             raise
         await _async_sleep_ms(1000)
-    if await _context_airbnb_cookies_suggest_session(page.context):
-        return True
     return False
 
 
@@ -164,7 +179,7 @@ async def _any_page_looks_logged_in(context: BrowserContext) -> bool:
                 return True
         except Exception:
             continue
-    return await _context_airbnb_cookies_suggest_session(context)
+    return False
 
 
 async def _airbnb_trip_url_confirms_session(page: Page) -> bool:
@@ -174,6 +189,7 @@ async def _airbnb_trip_url_confirms_session(page: Page) -> bool:
             _trips_url(), wait_until="domcontentloaded", timeout=30000
         )
         await _async_sleep_ms(2000)
+        await _raise_if_login_required(page)
         u = (page.url or "").lower()
         if "/login" in u or "/signup" in u or "authenticate" in u:
             return False
@@ -477,7 +493,7 @@ async def check_airbnb_login_status() -> bool:
                 _airbnb_origin(), wait_until="domcontentloaded", timeout=20000
             )
             await _async_sleep_ms(2000)
-            return await _is_logged_in(page)
+            return await _session_fully_ready(page, context)
         except Exception as e:
             logger.debug("Login status check failed: %s", e)
             return False
@@ -500,9 +516,29 @@ def check_airbnb_login_status_sync() -> bool:
 
 
 _CONTACT_CTA_RE = re.compile(
-    r"Contact( the)? host|Message( the)? host|^Message$|Check availability|Send a message|Contact( host)?",
+    r"^(?:Contact|Message)(?: the)? host$",
     re.IGNORECASE,
 )
+
+_COMPOSER_SELECTOR = (
+    'textarea[name="message"], textarea[name="contactHostMessage"], '
+    'textarea[aria-label*="message" i], textarea[placeholder*="message" i], '
+    'textarea[data-testid*="message"], #message-textarea, '
+    '[role="textbox"][contenteditable="true"], '
+    '[data-testid*="message"] [contenteditable="true"]'
+)
+
+
+async def _raise_if_login_required(page: Page) -> None:
+    path = urlsplit(page.url).path.lower()
+    if re.match(r"^/(?:login|signup|authenticate)(?:/|$)", path):
+        raise SessionExpired("Airbnb sign-in required; run make login before retrying.")
+    headings = page.get_by_role(
+        "heading", name=re.compile(r"^(?:Welcome back(?:,|\s)|Log in\b|Sign up$|Confirm it.s you$)", re.I)
+    )
+    for index in range(await headings.count()):
+        if await headings.nth(index).is_visible():
+            raise SessionExpired("Airbnb opened a login dialog, not a message box; run make login.")
 
 
 async def _dismiss_obvious_cookies(p: Page) -> None:
@@ -520,45 +556,6 @@ async def _dismiss_obvious_cookies(p: Page) -> None:
             pass
 
 
-async def _try_expand_collapsed_panels(p: Page) -> None:
-    for rx in (r"^Show more$", r"^Read more$", r"^View more$", r"^More$"):
-        try:
-            el = p.get_by_text(re.compile(rx, re.IGNORECASE)).first
-            if await el.count() > 0 and await el.is_visible():
-                await el.scroll_into_view_if_needed()
-                await el.click(timeout=2000, force=True)
-                await _async_sleep_ms(500)
-        except Exception:
-            pass
-
-
-async def _click_first_sensible(loc: Locator, *, timeout_ms: int = 20_000) -> bool:
-    try:
-        n = await loc.count()
-        for i in range(min(n, 40)):
-            el = loc.nth(i)
-            try:
-                vis = await el.is_visible()
-            except Exception:
-                vis = False
-            if not vis:
-                continue
-            try:
-                await el.scroll_into_view_if_needed()
-                await _async_sleep_ms(200)
-                await el.click(timeout=timeout_ms)
-                return True
-            except Exception:
-                try:
-                    await el.click(timeout=timeout_ms, force=True)
-                    return True
-                except Exception:
-                    continue
-    except Exception as e:  # pragma: no cover
-        logger.debug("_click_first_sensible: %s", e)
-    return False
-
-
 def _message_scopes(page: Page):
     for f in page.frames:
         if f.is_detached():
@@ -566,31 +563,37 @@ def _message_scopes(page: Page):
         yield f
 
 
-async def _open_contact_or_message_cta(p: Page) -> bool:
+async def _open_contact_or_message_cta(
+    p: Page, *, listing_id: Optional[str] = None, timeout_ms: int = 20000
+) -> bool:
     await p.set_viewport_size({"width": 1920, "height": 1080})
     await _dismiss_obvious_cookies(p)
-
+    links = p.locator('a[href*="/contact_host/"]')
     locs = [
-        p.locator('a[href*="contact_host"]'),
-        p.locator('a[href*="/contact/"]'),
-        p.locator('a[href*="/messaging"]'),
+        links,
         p.get_by_role("link", name=_CONTACT_CTA_RE),
         p.get_by_role("button", name=_CONTACT_CTA_RE),
-        p.locator('[data-testid="homes-pdp-cta-btn"] a'),
-        p.locator('[data-testid*="pdp-cta"] a, [data-testid*="pdp-cta"] button'),
     ]
-
-    for scroll_y in (0, 300, 700, 1200, 2000, 3600, 5500, 8000, 12_000):
-        await p.evaluate("y => window.scrollTo(0, y)", scroll_y)
-        await _async_sleep_ms(500)
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        await _raise_if_login_required(p)
         for loc in locs:
-            if await _click_first_sensible(loc, timeout_ms=15_000):
+            for index in range(await loc.count()):
+                element = loc.nth(index)
+                if not await element.is_visible():
+                    continue
+                href = await element.get_attribute("href")
+                if href:
+                    target = urlsplit(href)
+                    if target.netloc and target.netloc != urlsplit(p.url).netloc:
+                        continue
+                    if listing_id and f"/contact_host/{listing_id}/" not in target.path:
+                        continue
+                logger.info("[contact] Opening Message host; booking controls are excluded.")
+                await element.scroll_into_view_if_needed()
+                await element.click(timeout=10000)
                 return True
-
-    # Full page one more pass
-    for loc in locs:
-        if await _click_first_sensible(loc, timeout_ms=15_000):
-            return True
+        await _async_sleep_ms(250)
     return False
 
 
@@ -609,68 +612,152 @@ async def _raise_if_airbnb_host_quota_screen(page: Page) -> None:
             )
 
 
-async def _wait_for_visible_composer(p: Page) -> Locator:
-    for attempt in range(45):
-        if attempt % 4 == 0:
+async def _wait_for_visible_composer(p: Page, *, timeout_ms: int = 15000) -> Locator:
+    deadline = time.monotonic() + timeout_ms / 1000
+    attempt = 0
+    while time.monotonic() < deadline:
+        await _raise_if_login_required(p)
+        if attempt % 8 == 0:
             await _raise_if_airbnb_host_quota_screen(p)
-        await _try_expand_collapsed_panels(p)
         for sc in _message_scopes(p):
-            try:
-                locs = sc.locator(
-                    'textarea[name="message"], '
-                    'textarea[placeholder*="essage"], '
-                    'textarea[data-testid*="message"], '
-                    "#message-textarea, textarea"
-                )
-            except Exception:
-                locs = sc.locator("textarea")
-            try:
-                count = await locs.count()
-            except Exception:
-                count = 0
-            for j in range(min(count, 10)):
+            locs = sc.locator(_COMPOSER_SELECTOR)
+            for j in range(min(await locs.count(), 10)):
                 el = locs.nth(j)
-                try:
-                    if await el.is_visible():
-                        await el.scroll_into_view_if_needed()
-                        await _async_sleep_ms(200)
-                        return el
-                except Exception:
-                    continue
-        await _async_sleep_ms(700)
+                if await el.is_visible() and await el.is_editable():
+                    await el.scroll_into_view_if_needed()
+                    logger.info("[composer] Message box is visible and editable.")
+                    return el
+        attempt += 1
+        await _async_sleep_ms(250)
     await _raise_if_airbnb_host_quota_screen(p)
-    raise Exception(
-        "Message composer (textarea) did not become visible — try a wider window or complete "
-        "any required steps in the message panel"
+    raise ComposerUnavailable(
+        f"No editable message box on {urlsplit(p.url).path}; no Send action was taken."
     )
 
 
-async def _click_send_message(p: Page) -> bool:
-    send_list = [
-        p.get_by_role("button", name=re.compile(r"^Send( message)?$", re.I)),
-        p.locator("button[type=\"submit\"]").filter(
-            has_text=re.compile("Send|Submit", re.I)
-        ),
-        p.locator("[data-testid*=\"submit\"]"),
-        p.locator("button").filter(has_text=re.compile("^Send$|^Send message$", re.I)),
-    ]
-    for loc in send_list:
-        if await _click_first_sensible(loc, timeout_ms=35_000):
-            return True
+async def _click_send_message(
+    p: Page, *, before_send: Optional[Callable[[], Awaitable[None]]] = None
+) -> bool:
     for sc in _message_scopes(p):
-        for loc in [
-            sc.get_by_role("button", name=re.compile("Send", re.I)),
-            sc.locator("button").filter(has_text=re.compile("Send", re.I)),
-        ]:
-            if await _click_first_sensible(loc, timeout_ms=20_000):
-                return True
+        buttons = sc.get_by_role("button", name=re.compile(r"^Send(?: message)?$", re.I))
+        for index in range(await buttons.count()):
+            button = buttons.nth(index)
+            if not await button.is_visible() or not await button.is_enabled():
+                continue
+            await _raise_if_login_required(p)
+            await _raise_if_airbnb_host_quota_screen(p)
+            if before_send:
+                await before_send()
+            logger.info("[submit] Clicking Send once; waiting for a saved conversation.")
+            try:
+                await button.click(timeout=10000)
+            except Exception as exc:
+                raise DeliveryUnconfirmed("Send was attempted; do not retry without checking the thread.") from exc
+            return True
     return False
+
+
+_REJECTION_MARKERS = (
+    "can't send your message yet",
+    "links and contact info can't be shared",
+    "please remove the info below",
+)
+#: Airbnb's "Why risk it? Stay on Airbnb" interstitial. It reads as advice but
+#: it withholds the message, so treat it as a refusal.
+_OFF_PLATFORM_MARKERS = (
+    "why risk it",
+    "communicating with a host outside of airbnb",
+    "refers to communicating with a host outside",
+)
+_QUOTED_TERM_RE = re.compile(r"[\u201c\"']([^\u201d\"']{1,60})[\u201d\"']")
+
+
+def _normalise_quotes(text: str) -> str:
+    return text.replace("\u2019", "'").replace("\u2018", "'")
+
+
+def parse_rejection_terms(text: str) -> list[str]:
+    """Terms Airbnb named as unacceptable, taken from its own refusal notice."""
+    flat = _normalise_quotes(" ".join(text.split()))
+    if not any(marker in flat.lower() for marker in _REJECTION_MARKERS):
+        return []
+    tail = flat.split("before sending", 1)[-1]
+    seen, terms = set(), []
+    for candidate in _QUOTED_TERM_RE.findall(tail):
+        cleaned = candidate.strip(" :.")
+        if cleaned and cleaned.lower() not in seen:
+            seen.add(cleaned.lower())
+            terms.append(cleaned)
+    return terms
+
+
+async def _raise_if_message_rejected(page: Page) -> None:
+    """Airbnb vets a first message and says so when it refuses to deliver it."""
+    try:
+        text = await page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        return
+    flat = _normalise_quotes(" ".join(text.split())).lower()
+    if any(marker in flat for marker in _REJECTION_MARKERS):
+        terms = parse_rejection_terms(text)
+        detail = ", ".join(repr(t) for t in terms) or "contact details or links"
+        raise MessageRejected(
+            f"Airbnb refused the message and did not send it. Remove {detail}, then retry.",
+            terms,
+        )
+    if any(marker in flat for marker in _OFF_PLATFORM_MARKERS):
+        raise MessageRejected(
+            "Airbnb read the message as arranging contact off-platform and did not "
+            "send it. Remove social handles and any off-platform invitation, then retry.",
+            [],
+        )
+
+
+async def _wait_for_delivery(page: Page, message: str, *, timeout_ms: int = 20000) -> tuple[str, str]:
+    expected = " ".join(message.split())
+    selector = (
+        '[role="group"][data-item-id], [data-message-id], '
+        '[data-name="message-content-wrapper"]'
+    )
+    deadline = time.monotonic() + timeout_ms / 1000
+    thread_id, thread_url = None, ""
+    while time.monotonic() < deadline:
+        await _raise_if_login_required(page)
+        await _raise_if_message_rejected(page)
+        await _raise_if_airbnb_host_quota_screen(page)
+        thread_id, thread_url = await capture_thread_reference(page)
+        texts = await page.locator(selector).all_text_contents()
+        if thread_id and any(expected in " ".join(text.split()) for text in texts):
+            break
+        view_thread = page.get_by_role(
+            "link", name=re.compile(r"^(?:View (?:conversation|message|thread)|Go to (?:conversation|messages))$", re.I)
+        )
+        if await view_thread.count() and await view_thread.first.is_visible():
+            await view_thread.first.click(timeout=5000)
+        await _async_sleep_ms(250)
+    else:
+        raise DeliveryUnconfirmed("Send was clicked, but the message was not found in a conversation. No automatic retry.")
+
+    await page.reload(wait_until="domcontentloaded", timeout=30000)
+    try:
+        await page.wait_for_function(
+            """({selector, expected}) => Array.from(document.querySelectorAll(selector))
+                .some(el => el.textContent.replace(/\\s+/g, ' ').trim().includes(expected))""",
+            arg={"selector": selector, "expected": expected},
+            timeout=timeout_ms,
+        )
+    except Exception as exc:
+        raise DeliveryUnconfirmed("The message could not be verified after reloading the thread. No automatic retry.") from exc
+    logger.info("[verified] Message persists after reload; thread=%s", thread_id)
+    return str(thread_id), thread_url
 
 
 async def _send_message_to_host(
     page: Page,
     listing: Listing,
     message: str,
+    *,
+    before_send: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> tuple[Optional[str], str]:
     """Navigate to a listing and send a message to the host.
 
@@ -684,18 +771,20 @@ async def _send_message_to_host(
     if not listing_url:
         listing_url = f"{_airbnb_origin()}/rooms/{listing.id}"
 
-    logger.info("Opening listing: %s", listing_url)
+    logger.info("[listing] %s | %s | host=%s", listing.title, listing.location, listing.host_name or "not yet extracted")
+    logger.info("[navigate] %s", listing_url.split("?")[0])
     await page.goto(listing_url, wait_until="domcontentloaded", timeout=60_000)
     try:
         await page.wait_for_load_state("load", timeout=45_000)
     except Exception:  # pragma: no cover
         pass
     await _async_sleep_ms(2000)
+    await _raise_if_login_required(page)
     await _raise_if_airbnb_host_quota_screen(page)
 
-    if not await _open_contact_or_message_cta(page):
-        raise Exception(
-            "Could not find or activate Contact / Message on the listing (try scrolling the page yourself once)"
+    if not await _open_contact_or_message_cta(page, listing_id=listing.id):
+        raise ComposerUnavailable(
+            "No Message host control was found; booking buttons were deliberately not clicked."
         )
 
     await _async_sleep_ms(2000)
@@ -706,14 +795,11 @@ async def _send_message_to_host(
     await ta.fill(message)
     await _async_sleep_ms(400)
 
-    if not await _click_send_message(page):
-        raise Exception("Send / Send message control stayed hidden — panel may need to be expanded")
-
-    await _async_sleep_ms(2000)
-    await _raise_if_airbnb_host_quota_screen(page)
-    logger.info("Message sent to %s for '%s'", listing.host_name or "host", listing.title)
-
-    thread_id, thread_url = await capture_thread_reference(page)
-    if thread_id:
-        logger.info("Linked to thread %s", thread_id)
-    return thread_id, thread_url
+    if not await _click_send_message(page, before_send=before_send):
+        raise ComposerUnavailable("No enabled Send message button found; nothing was submitted.")
+    try:
+        return await _wait_for_delivery(page, message)
+    except (DeliveryUnconfirmed, MessageRejected):
+        raise
+    except Exception as exc:
+        raise DeliveryUnconfirmed("Submission outcome is uncertain; inspect the conversation before retrying.") from exc

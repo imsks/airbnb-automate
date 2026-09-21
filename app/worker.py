@@ -31,6 +31,7 @@ from app.database import get_connection, get_listings, init_db
 from app.jobs import JobType
 from app.listing_detail import scrape_listing_detail
 from app.models import DealState, Job
+from app.messaging_errors import DeliveryUnconfirmed, MessageRejected
 from app.policy import freeze_sending
 from app.send_budget import SendingFrozen
 
@@ -135,6 +136,17 @@ class Worker:
                 # 13-second scout freezes the dashboard sharing this process.
                 result = await asyncio.to_thread(handler, job)
             jobs.complete(job.id, result if isinstance(result, dict) else {}, self.db_path)
+            outcome = result.get("status", "completed") if isinstance(result, dict) else "completed"
+            logger.info("[job #%s] %s → %s", job.id, job.type, outcome)
+        except MessageRejected as exc:
+            # Airbnb refused the wording and sent nothing. The browser, the
+            # session and the queue are all fine, so only this draft failed.
+            status = jobs.fail(job.id, str(exc), self.db_path)
+            logger.error("✂️  %s #%s rejected by Airbnb (%s): %s", job.type, job.id, status.value, exc)
+        except DeliveryUnconfirmed as exc:
+            jobs.cancel(job.id, str(exc), self.db_path)
+            freeze_sending("Message submission needs verification", self.db_path)
+            logger.error("[verification required] Job #%s stopped; no automatic resend: %s", job.id, exc)
         except SessionExpired as exc:
             # Every browser job will fail the same way until a human signs in,
             # and sending while logged out is how accounts get flagged.

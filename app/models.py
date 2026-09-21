@@ -137,6 +137,9 @@ _HAPPY_PATH: dict[DealState, set[DealState]] = {
     DealState.REJECTED: set(),
     DealState.STALE: {DealState.HOST_REPLIED},
     DealState.NEEDS_HUMAN: {
+        # A human who verifies the outreach did land puts the deal back on the
+        # happy path; without this an unconfirmed-but-delivered send is stuck.
+        DealState.CONTACTED,
         DealState.NEGOTIATING,
         DealState.TERMS_AGREED,
         DealState.READY_TO_BOOK,

@@ -8,6 +8,7 @@ itself, which is what replaces watching the worker's terminal output.
 from __future__ import annotations
 
 from html import escape
+from urllib.parse import urlsplit
 
 _FUNNEL_ORDER = [
     ("discovered", "Discovered"),
@@ -74,6 +75,9 @@ button.danger { background:#6b2b2b; }
 .feed .t { color:#5c6479; } .feed .s { color:#7aa2ff; }
 .feed .warn { color:#ffcf8b; } .feed .err { color:#ff8b8b; }
 .hint { color:#5c6479; font-size:.8rem; margin-top:.5rem; }
+.message-card { margin:.6rem 0; }
+.message-card summary { cursor:pointer; font-weight:600; }
+.message-draft { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
 """
 
 
@@ -253,6 +257,28 @@ def _cost_table(rows: list) -> str:
     )
 
 
+def _message_cards(rows: list) -> str:
+  if not rows:
+    return '<p class="empty">No outreach drafts yet. Generated text and delivery results appear here.</p>'
+  cards = []
+  for row in rows:
+    label = "Delivery unconfirmed — inspect before retrying" if row["status"] == "sending" else row["status"]
+    thread_link = ""
+    url = row.get("thread_url") or ""
+    parsed = urlsplit(url)
+    if parsed.scheme == "https" and parsed.hostname in ("www.airbnb.com", "www.airbnb.co.in"):
+      thread_link = f'<a href="{_e(url)}" target="_blank" rel="noopener">View Airbnb conversation</a>'
+    reason = row.get("error") or row.get("blocked_reason") or ""
+    cards.append(
+      f'<details class="panel message-card"><summary>Message #{row["id"]} · '
+      f'{_e(row["host_name"] or "Host")} · {_e(row["place_name"])} · {_e(label)}</summary>'
+      f'<p>{_e(row["location"])} · {_e(row.get("prompt_version", ""))}</p>'
+      f'<pre class="message-draft">{_e(row["body"])}</pre>'
+      f'<p>{_e(reason)}</p>{thread_link}</details>'
+    )
+  return "".join(cards)
+
+
 _SCRIPT = """
 async function post(url, body) {
   const r = await fetch(url, {
@@ -279,7 +305,9 @@ async function createCampaign() {
 // Pause auto-refresh while typing so the form is never wiped mid-edit.
 let typing = false;
 document.addEventListener('input', () => { typing = true; });
-setInterval(() => { if (!typing) location.reload(); }, REFRESH_MS);
+setInterval(() => {
+  if (!typing && !document.querySelector('.message-card[open]')) location.reload();
+}, REFRESH_MS);
 """
 
 
@@ -320,6 +348,9 @@ def render_dashboard(
 
   <h2>Live activity</h2>
   {_activity(list(activity))}
+
+  <h2>Messages — drafts and delivery</h2>
+  {_message_cards(brief.get('messages', []))}
 
   <h2>Pipeline</h2>
   {_funnel(brief['funnel'])}

@@ -12,6 +12,7 @@ Two changes from the v1 prompts:
 
 from __future__ import annotations
 
+from app.config import get_blocked_message_terms
 from app.models import Lead, Listing
 from app.policy import GuardrailPolicy
 
@@ -24,10 +25,16 @@ Hard rules. Breaking any of these gets the message blocked before it is sent:
 - Never state a specific calendar date. Offer availability windows only
   ("anytime in November or December"), never "Dec 12".
 - Never promise more than: {deliverables}.
-- Never share a phone number, email, or any handle other than {handles}.
+- Never share a phone number, email, or any social handle.
 - Never suggest moving the conversation or the payment off Airbnb.
 - Never claim more reach than: {followers}.
 - {price_rule}
+
+Airbnb screens first messages for anything that looks like arranging contact
+off-platform and withholds them, so these are hard rules too:
+- Never write {blocked_terms}.
+- Never write an @handle, a URL, an email address or a phone number. Name no
+  account at all: say "{followers} followers" and let the host ask where.
 """
 
 
@@ -45,16 +52,24 @@ def guardrail_block(policy: GuardrailPolicy) -> str:
         )
     return _GUARDRAIL_BLOCK.format(
         deliverables=", ".join(policy.allowed_deliverables) or "nothing",
-        handles=policy.credential_facts.get("handles", "(none)"),
+        blocked_terms=_blocked_terms_sentence(),
         followers=policy.credential_facts.get("followers", "(unspecified)"),
         price_rule=price_rule,
     )
 
 
+def _blocked_terms_sentence() -> str:
+    parts = []
+    for term, replacement in get_blocked_message_terms().items():
+        word = term.title()
+        parts.append(f"{word!r} (write {replacement!r})" if replacement else repr(word))
+    return ", ".join(parts) or "any social-platform name"
+
+
 SCRIBE_SYSTEM = """You write the first message to an Airbnb host, proposing a stay
 in exchange for travel content.
 
-You are writing as {name}, {role}, with {followers} followers across {handles}.
+You are writing as {name}, {role}, with {followers} followers.
 
 What makes these messages work:
 - Prove you read the listing. Reference something specific the host wrote, an
@@ -168,7 +183,6 @@ def build_scribe_prompt(
         name=facts.get("name", ""),
         role=facts.get("role", ""),
         followers=facts.get("followers", ""),
-        handles=facts.get("handles", ""),
         guardrails=guardrail_block(policy),
     )
     human = SCRIBE_HUMAN.format(

@@ -132,6 +132,10 @@ def test_sending_resumes_after_the_switch_is_released(db, budget_env):
     [
         ("https://www.airbnb.com/messages/thread/1234567", "1234567"),
         ("https://www.airbnb.co.in/hosting/messages/thread/99", "99"),
+        # Where a real send actually landed; missing this reported a delivered
+        # message as unconfirmed.
+        ("https://www.airbnb.co.in/guest/messages/2673197899", "2673197899"),
+        ("https://www.airbnb.co.in/guest/inbox/777", "777"),
         ("https://www.airbnb.com/inbox?thread_id=4242", "4242"),
         ("https://www.airbnb.com/rooms/12345", None),
         ("", None),

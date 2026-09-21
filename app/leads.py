@@ -118,7 +118,27 @@ def save_enrichment(lead_id: int, detail: dict, db_path: Optional[str] = None) -
                 lead_id,
             ),
         )
+        host_name = (detail.get("host_name") or "").strip()
+        title = (detail.get("title") or "").strip()
+        if host_name or title:
+            conn.execute(
+                """UPDATE listings SET host_name = COALESCE(NULLIF(?, ''), host_name),
+                          title = COALESCE(NULLIF(?, ''), title)
+                   WHERE id = (SELECT listing_id FROM leads WHERE id = ?)""",
+                (host_name, title, lead_id),
+            )
+            conn.execute(
+                """UPDATE deals SET host_name = COALESCE(NULLIF(?, ''), host_name),
+                          place_name = COALESCE(NULLIF(?, ''), place_name), updated_at = CURRENT_TIMESTAMP
+                   WHERE listing_id = (SELECT listing_id FROM leads WHERE id = ?)""",
+                (host_name, title, lead_id),
+            )
         conn.commit()
+        logger.info(
+            "[enriched lead #%s] host=%s | description=%d chars | amenities=%d | review excerpts=%d",
+            lead_id, host_name or "not available", len(detail.get("description", "")),
+            len(detail.get("amenities", [])), len(detail.get("review_excerpts", [])),
+        )
     finally:
         conn.close()
 

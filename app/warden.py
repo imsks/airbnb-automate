@@ -16,7 +16,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.config import get_follower_claim_ceiling
+from app.config import (
+    get_allow_handles_before_booking,
+    get_blocked_message_terms,
+    get_follower_claim_ceiling,
+)
 from app.deals import count_agent_replies
 from app.models import Deal
 from app.policy import GuardrailPolicy, load_policy, sending_enabled
@@ -39,6 +43,11 @@ class Rule:
     DELIVERABLES = "deliverables"
     CREDENTIALS = "credentials"
     REPLY_CAP = "reply_cap"
+    PLATFORM_TERMS = "platform_terms"
+
+
+#: Violations a fresh draft can clear on its own, with no human judgement.
+_REVISABLE_RULES = frozenset({Rule.PLATFORM_TERMS})
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,13 @@ class Verdict:
         """
         return bool(self.violations) and all(
             v.rule == Rule.KILL_SWITCH for v in self.violations
+        )
+
+    @property
+    def revisable_only(self) -> bool:
+        """True when rewriting the draft is enough to clear every violation."""
+        return bool(self.violations) and all(
+            v.rule in _REVISABLE_RULES for v in self.violations
         )
 
     def __bool__(self) -> bool:
@@ -436,6 +452,42 @@ def _check_credentials(body: str, policy: GuardrailPolicy) -> list[Violation]:
     return violations
 
 
+def _check_blocked_terms(body: str) -> list[Violation]:
+    """Airbnb will not deliver a first message containing these.
+
+    Catching them here costs nothing. Letting one through wastes a send attempt
+    and leaves the draft sitting rejected in Airbnb's composer.
+    """
+    violations: list[Violation] = []
+    for term, replacement in get_blocked_message_terms().items():
+        # Terms may be handles or phrases, so only apply a word boundary where
+        # one actually exists: r"\b@handle" would never match.
+        prefix = r"\b" if term[:1].isalnum() else ""
+        suffix = r"\b" if term[-1:].isalnum() else ""
+        match = re.search(prefix + re.escape(term) + suffix, body, re.IGNORECASE)
+        if match:
+            advice = f"write {replacement!r} instead" if replacement else "remove it"
+            violations.append(
+                Violation(
+                    Rule.PLATFORM_TERMS,
+                    f"Airbnb blocks {term!r} before a reservation exists; {advice}",
+                    _excerpt(body, match.start(), match.end()),
+                )
+            )
+
+    if not get_allow_handles_before_booking():
+        for match in _HANDLE_RE.finditer(_EMAIL_RE.sub(" ", body)):
+            violations.append(
+                Violation(
+                    Rule.PLATFORM_TERMS,
+                    "Airbnb reads a named social account as arranging contact "
+                    "off-platform; state the audience size without the handle",
+                    match.group(),
+                )
+            )
+    return violations
+
+
 def _check_reply_cap(
     deal: Optional[Deal], policy: GuardrailPolicy, db_path: Optional[str]
 ) -> list[Violation]:
@@ -487,6 +539,7 @@ def review(
     violations.extend(_check_price(body, active))
     violations.extend(_check_deliverables(body, active))
     violations.extend(_check_credentials(body, active))
+    violations.extend(_check_blocked_terms(body))
     violations.extend(_check_reply_cap(deal, active, db_path))
 
     verdict = Verdict(allowed=not violations, violations=violations)

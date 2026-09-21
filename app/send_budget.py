@@ -30,7 +30,8 @@ from app.outreach_quota import (
     sleep_between_outreach_attempts,
     wait_until_send_allowed,
 )
-from app.policy import sending_enabled
+from app.messaging_errors import DeliveryUnconfirmed
+from app.policy import sending_enabled, single_message_authorized
 
 logger = logging.getLogger(__name__)
 
@@ -70,22 +71,35 @@ def remaining_sends(db_path: Optional[str] = None) -> int:
 
 
 @asynccontextmanager
-async def reserved_send(channel: str, db_path: Optional[str] = None):
+async def reserved_send(
+    channel: str, db_path: Optional[str] = None, *, message_id: Optional[int] = None,
+    authorization: Optional[str] = None,
+):
     """Hold a budget slot for one message, recording it only if the body is sent.
 
     The kill switch is re-checked after the quota wait: that wait can last hours,
     and a freeze issued during it must still take effect.
     """
-    if not sending_enabled(db_path):
+    def permitted() -> bool:
+        if authorization:
+            return single_message_authorized(message_id, authorization, db_path)
+        return sending_enabled(db_path)
+
+    if not permitted():
         raise SendingFrozen("kill switch engaged before send")
 
     await wait_until_send_allowed(db_path)
 
-    if not sending_enabled(db_path):
+    if not permitted():
         raise SendingFrozen("kill switch engaged while waiting for a budget slot")
 
     started = time.time()
-    yield
+    try:
+        yield
+    except DeliveryUnconfirmed:
+        # A submission with no receipt may still count against Airbnb's quota.
+        record_successful_send(db_path)
+        raise
     record_successful_send(db_path)
     logger.info(
         "Send budget: %s message consumed a slot (%.1fs in reservation), %d left",

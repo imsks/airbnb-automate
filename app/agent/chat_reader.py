@@ -26,12 +26,9 @@ from app.browser_session import (
     save_storage_state,
 )
 from app.config import get_airbnb_base_url
+from app.messaging_errors import SessionExpired
 
 logger = logging.getLogger(__name__)
-
-
-class SessionExpired(RuntimeError):
-    """Airbnb bounced us to the login page — only a human can fix this."""
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +479,8 @@ async def fetch_inbox_chats(
                         thread.booking_status or "(none)",
                         thread.location or "(none)",
                     )
+                except SessionExpired:
+                    raise
                 except Exception as e:
                     logger.warning(
                         "Error reading thread %s (%s): %s",
@@ -491,6 +490,8 @@ async def fetch_inbox_chats(
                     )
                     continue
 
+        except SessionExpired:
+            raise
         except Exception as e:
             logger.error("Failed to fetch inbox chats: %s", e)
         finally:
