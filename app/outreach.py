@@ -713,43 +713,229 @@ async def _raise_if_message_rejected(page: Page) -> None:
         )
 
 
-async def _wait_for_delivery(page: Page, message: str, *, timeout_ms: int = 20000) -> tuple[str, str]:
-    expected = " ".join(message.split())
-    selector = (
-        '[role="group"][data-item-id], [data-message-id], '
-        '[data-name="message-content-wrapper"]'
-    )
-    deadline = time.monotonic() + timeout_ms / 1000
+#: Conversation chrome. The composer is deliberately not in this list: a filled
+#: box is not proof the message left the page.
+_CONVERSATION_SELECTOR = (
+    '[data-testid="message-list"], '
+    '[data-testid="message-thread-item-list-container"], '
+    '[role="group"][data-item-id], [data-message-id], '
+    '[data-name="message-content-wrapper"]'
+)
+#: How long to watch the inbox for the new row before giving up.
+_INBOX_LOOKUP_SECONDS = 8
+_VIEW_CONVERSATION_RE = re.compile(
+    r"(?:view|go to|see|open)\s+(?:the\s+)?(?:conversation|messages?|threads?)",
+    re.I,
+)
+
+
+async def _conversation_visible(page: Page) -> bool:
+    """True when a conversation is on screen, whether or not the bubble text matched."""
+    loc = page.locator(_CONVERSATION_SELECTOR)
+    try:
+        count = min(await loc.count(), 8)
+    except Exception:
+        return False
+    for index in range(count):
+        try:
+            if await loc.nth(index).is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def choose_inbox_row(
+    rows: list[tuple[str, str, str]], *, host_name: str = "", location: str = ""
+) -> tuple[Optional[str], str]:
+    """Pick the newest inbox row for the host we just wrote to.
+
+    Rows are newest first. Airbnb's preview says "Enquiry sent", not the
+    message, so the host and the city are what identify the thread.
+    """
+    host = " ".join(host_name.split()).lower()
+    city = location.split(",")[0].split("(")[0].strip().lower()
+
+    def flat(row: tuple[str, str, str]) -> str:
+        return " ".join(row[2].split()).lower()
+
+    if host and city:
+        both = [row for row in rows if host in flat(row) and city in flat(row)]
+        if both:
+            return both[0][0], both[0][1]
+    if host:
+        named = [row for row in rows if host in flat(row)]
+        if named:
+            return named[0][0], named[0][1]
+        # A named host who is missing from the list is not "the newest row
+        # in that city". That row is a different conversation.
+        return None, ""
+    if city:
+        placed = [row for row in rows if city in flat(row)]
+        if placed:
+            return placed[0][0], placed[0][1]
+    return None, ""
+
+
+def choose_thread_link(
+    links: list[tuple[str, str, str]], message: str, host_name: str = ""
+) -> tuple[Optional[str], str]:
+    """Pick the thread a send just created from ``(id, url, text)`` links.
+
+    The message preview wins. A host name is used only when one row matches.
+    Several unnamed threads are left alone rather than guessed.
+    """
+    snippet = " ".join(message.split())[:60].lower()
+    host = " ".join(host_name.split()).lower()
+    if snippet:
+        for thread_id, url, text in links:
+            if snippet in " ".join(text.split()).lower():
+                return thread_id, url
+    if host:
+        named = [item for item in links if host in " ".join(item[2].split()).lower()]
+        if len(named) == 1:
+            return named[0][0], named[0][1]
+    if len(links) == 1:
+        return links[0][0], links[0][1]
+    return None, ""
+
+
+async def _inbox_rows(page: Page) -> list[tuple[str, str, str]]:
+    """``(thread_id, url, text)`` from Airbnb's inbox list.
+
+    The row's address is ``#``. The id is ``data-testid="inbox_list_<id>"``.
+    """
+    try:
+        raw = await page.eval_on_selector_all(
+            'a[data-testid^="inbox_list_"]',
+            """els => els.map(a => ({
+                testid: a.getAttribute('data-testid') || '',
+                text: [a.innerText, a.getAttribute('aria-label')].filter(Boolean).join(' ')
+            }))""",
+        )
+    except Exception:
+        return []
+    origin = _airbnb_origin()
+    rows: list[tuple[str, str, str]] = []
+    for item in raw:
+        thread_id = (item.get("testid") or "").replace("inbox_list_", "", 1)
+        if not thread_id.isdigit():
+            continue
+        rows.append((thread_id, f"{origin}/guest/messages/{thread_id}", item.get("text") or ""))
+    return rows
+
+
+async def _thread_from_inbox(
+    page: Page, message: str, host_name: str, location: str = ""
+) -> tuple[Optional[str], str]:
+    """Open the inbox and read the thread this send became.
+
+    A listing-page send stays on the listing. The conversation is the newest
+    inbox row for that host. ``/guest/inbox`` also auto-opens the previous
+    thread, so the address bar is not evidence — only a matching row is.
+    """
+    origin = _airbnb_origin()
+    for path in ("/guest/inbox", "/hosting/inbox"):
+        try:
+            await page.goto(f"{origin}{path}", wait_until="domcontentloaded", timeout=30000)
+        except Exception:
+            continue
+        deadline = time.monotonic() + _INBOX_LOOKUP_SECONDS
+        thread_id, thread_url = None, ""
+        while True:
+            await _raise_if_login_required(page)
+            await _raise_if_message_rejected(page)
+            thread_id, thread_url = choose_inbox_row(
+                await _inbox_rows(page), host_name=host_name, location=location
+            )
+            if thread_id or time.monotonic() >= deadline:
+                break
+            await _async_sleep_ms(500)
+        if not thread_id:
+            continue
+        logger.info(
+            "[inbox] Send is in thread %s (%d chars)",
+            thread_id,
+            len(" ".join(message.split())),
+        )
+        return thread_id, thread_url
+    return None, ""
+
+
+async def _wait_for_delivery(
+    page: Page,
+    message: str,
+    *,
+    timeout_ms: int = 20000,
+    clicked: bool = False,
+    host_name: str = "",
+    location: str = "",
+) -> tuple[str, str]:
+    # The listing page rarely navigates. Look briefly, then open the inbox.
+    wait_s = min(timeout_ms / 1000, 5 if clicked else timeout_ms / 1000)
+    deadline = time.monotonic() + wait_s
     thread_id, thread_url = None, ""
     while time.monotonic() < deadline:
         await _raise_if_login_required(page)
         await _raise_if_message_rejected(page)
         await _raise_if_airbnb_host_quota_screen(page)
+        # Only the address bar counts here. A listing page contains other
+        # message links, and treating the only one as "the" thread attaches
+        # this send to a conversation that was already open.
         thread_id, thread_url = await capture_thread_reference(page)
-        texts = await page.locator(selector).all_text_contents()
-        if thread_id and any(expected in " ".join(text.split()) for text in texts):
+        if thread_id:
             break
-        view_thread = page.get_by_role(
-            "link", name=re.compile(r"^(?:View (?:conversation|message|thread)|Go to (?:conversation|messages))$", re.I)
-        )
-        if await view_thread.count() and await view_thread.first.is_visible():
-            await view_thread.first.click(timeout=5000)
+        view_thread = page.get_by_role("link", name=_VIEW_CONVERSATION_RE)
+        try:
+            if await view_thread.count() and await view_thread.first.is_visible():
+                await view_thread.first.click(timeout=5000)
+        except Exception:
+            logger.debug("[verify] View-conversation click did not complete", exc_info=True)
         await _async_sleep_ms(250)
     else:
-        raise DeliveryUnconfirmed("Send was clicked, but the message was not found in a conversation. No automatic retry.")
+        if clicked:
+            thread_id, thread_url = await _thread_from_inbox(
+                page, message, host_name, location
+            )
+        if not thread_id:
+            raise DeliveryUnconfirmed(
+                "Send was clicked, but no conversation was open afterwards. No automatic retry."
+            )
+        logger.info("[verified] Conversation found in the inbox; thread=%s", thread_id)
+        return str(thread_id), thread_url
 
-    await page.reload(wait_until="domcontentloaded", timeout=30000)
     try:
-        await page.wait_for_function(
-            """({selector, expected}) => Array.from(document.querySelectorAll(selector))
-                .some(el => el.textContent.replace(/\\s+/g, ' ').trim().includes(expected))""",
-            arg={"selector": selector, "expected": expected},
-            timeout=timeout_ms,
+        await page.reload(wait_until="domcontentloaded", timeout=30000)
+    except Exception:
+        logger.info(
+            "[verified] Thread URL stayed %s; the reload did not finish",
+            thread_id,
         )
-    except Exception as exc:
-        raise DeliveryUnconfirmed("The message could not be verified after reloading the thread. No automatic retry.") from exc
-    logger.info("[verified] Message persists after reload; thread=%s", thread_id)
-    return str(thread_id), thread_url
+        return str(thread_id or ""), thread_url or ""
+    reload_deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < reload_deadline:
+        await _raise_if_login_required(page)
+        await _raise_if_message_rejected(page)
+        await _raise_if_airbnb_host_quota_screen(page)
+        confirmed_id, confirmed_url = await capture_thread_reference(page)
+        if confirmed_id or await _conversation_visible(page):
+            thread_id = confirmed_id or thread_id
+            thread_url = confirmed_url or thread_url
+            break
+        await _async_sleep_ms(250)
+    else:
+        if clicked and thread_id:
+            logger.info("[verified] Conversation stayed open; thread=%s", thread_id)
+            return str(thread_id), thread_url or ""
+        raise DeliveryUnconfirmed(
+            "The conversation was not open after reloading the thread. No automatic retry."
+        )
+    logger.info(
+        "[verified] Conversation is open after reload; thread=%s message_chars=%s",
+        thread_id or "unlinked",
+        len(" ".join(message.split())),
+    )
+    return str(thread_id or ""), thread_url or ""
 
 
 async def _send_message_to_host(
@@ -798,8 +984,18 @@ async def _send_message_to_host(
     if not await _click_send_message(page, before_send=before_send):
         raise ComposerUnavailable("No enabled Send message button found; nothing was submitted.")
     try:
-        return await _wait_for_delivery(page, message)
-    except (DeliveryUnconfirmed, MessageRejected):
+        return await _wait_for_delivery(
+            page,
+            message,
+            clicked=True,
+            host_name=listing.host_name or "",
+            location=listing.location or "",
+        )
+    except (DeliveryUnconfirmed, MessageRejected, AirbnbHostQuotaUIError):
         raise
     except Exception as exc:
-        raise DeliveryUnconfirmed("Submission outcome is uncertain; inspect the conversation before retrying.") from exc
+        logger.exception("[send] Confirmation failed after the click")
+        raise DeliveryUnconfirmed(
+            "Submission outcome is uncertain; inspect the conversation before retrying. "
+            f"({type(exc).__name__}: {exc})"
+        ) from exc

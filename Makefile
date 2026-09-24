@@ -1,24 +1,21 @@
 PYTHON := $(firstword $(wildcard .venv/bin/python venv/bin/python) python3)
 
-.PHONY: start login session api worker tick brief status itinerary sync freeze resume test
+.PHONY: login up down session tick brief status itinerary \
+	sync freeze resume reset test
 
-# The usual way to run it: API + worker in one process, dashboard opens.
-start:
-	@$(PYTHON) manage.py start
-
-# Sign in to Airbnb by hand, once. Nothing can do this for you.
+# Sign in to Airbnb by hand, once. The profile lands in ./data, which `up` mounts.
 login:
 	@$(PYTHON) manage.py login
 
+# Build the image and run office, courier, and the dashboard.
+up:
+	docker compose up -d --build
+
+down:
+	docker compose down
+
 session:
 	@$(PYTHON) manage.py session
-
-# Run the halves separately — useful when the worker lives somewhere else.
-api:
-	@$(PYTHON) manage.py api --reload
-
-worker:
-	@$(PYTHON) manage.py worker
 
 tick:
 	@$(PYTHON) manage.py tick
@@ -40,6 +37,10 @@ freeze:
 
 resume:
 	@$(PYTHON) manage.py resume
+
+# Wipe all pipeline data and start fresh (keeps your Airbnb login + guardrails).
+reset:
+	@$(PYTHON) manage.py reset --yes
 
 test:
 	@$(PYTHON) -m pytest tests/ -q

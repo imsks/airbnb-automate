@@ -9,9 +9,12 @@ import pytest
 from app.database import (
     init_db,
     create_search,
+    get_connection,
+    get_listing,
     get_search,
     get_searches,
     update_search_status,
+    reset_pipeline,
     save_listings,
     get_listings,
 )
@@ -181,3 +184,35 @@ def test_search_with_optional_fields(db_path):
     assert retrieved.checkin == ""
     assert retrieved.min_price is None
     assert retrieved.max_price is None
+
+
+def test_get_listing_fetches_one_by_id(db_path):
+    sid = create_search(Search(location="Goa"), db_path)
+    save_listings([Listing(id="L9", title="Villa", host_name="Zoe")], sid, db_path)
+    assert get_listing("L9", db_path).title == "Villa"
+    assert get_listing("nope", db_path) is None
+
+
+def test_reset_pipeline_wipes_data_but_keeps_schema_and_policy(db_path):
+    from app import policy as policy_mod
+
+    sid = create_search(Search(location="Goa"), db_path)
+    save_listings([Listing(id="L1", title="Villa", host_name="Zoe")], sid, db_path)
+    upsert_lead("L1", db_path=db_path)
+    policy_mod.freeze_sending("kill switch on", db_path)  # a guardrail to preserve
+
+    wiped = reset_pipeline(db_path)
+
+    assert "listings" in wiped and "leads" in wiped and "searches" in wiped
+    assert "policy" not in wiped and "schema_migrations" not in wiped
+    assert get_listing("L1", db_path) is None
+    assert get_searches(db_path) == []
+    # guardrail/kill switch survives the wipe
+    assert policy_mod.sending_enabled(db_path) is False
+
+    conn = get_connection(db_path)
+    try:
+        # schema still intact: tables are queryable after the wipe
+        assert conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0] == 0
+    finally:
+        conn.close()

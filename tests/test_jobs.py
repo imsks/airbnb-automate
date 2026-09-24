@@ -37,6 +37,33 @@ def test_enqueue_returns_job_id(db):
     assert job.status is JobStatus.PENDING
 
 
+def test_a_kill_switch_block_can_be_sent_again(db):
+    job_id = jobs.enqueue(
+        JobType.SEND_OUTREACH, {"lead_id": 1}, idempotency_key="outreach:1:L1"
+    )
+    jobs.complete(
+        job_id,
+        {
+            "status": "blocked",
+            "reason": "[kill_switch] sending is frozen by the kill switch",
+        },
+    )
+    assert jobs.enqueue(
+        JobType.SEND_OUTREACH, {"lead_id": 1}, idempotency_key="outreach:1:L1"
+    ) is None
+    assert jobs.reopen_paused_send("outreach:1:L1") == job_id
+    assert jobs.get_job(job_id).status is JobStatus.PENDING
+
+
+def test_a_message_that_was_actually_sent_is_not_reopened(db):
+    job_id = jobs.enqueue(
+        JobType.SEND_OUTREACH, {"lead_id": 1}, idempotency_key="outreach:1:L2"
+    )
+    jobs.complete(job_id, {"status": "sent"})
+    assert jobs.reopen_paused_send("outreach:1:L2") is None
+    assert jobs.get_job(job_id).status is JobStatus.DONE
+
+
 def test_duplicate_idempotency_key_is_ignored(db):
     first = jobs.enqueue(JobType.ENRICH_LEAD, {"lead_id": 1}, idempotency_key="lead-1")
     second = jobs.enqueue(JobType.ENRICH_LEAD, {"lead_id": 1}, idempotency_key="lead-1")
@@ -191,6 +218,23 @@ def test_cancel_removes_job_from_rotation(db):
     jobs.cancel(job_id, "no longer needed")
     assert jobs.get_job(job_id).status is JobStatus.CANCELLED
     assert jobs.lease("w1") == []
+
+
+def test_defer_pending_holds_queued_sends_and_leaves_finished_ones(db):
+    waiting = jobs.enqueue(
+        JobType.SEND_OUTREACH, {"lead_id": 1}, idempotency_key="outreach:1"
+    )
+    finished = jobs.enqueue(JobType.RESEARCH_TERRITORY, {"name": "Goa"})
+    jobs.complete(finished)
+    jobs.lease("courier", types=[JobType.SEND_OUTREACH])
+    until = time.time() + 1000
+    assert jobs.defer_pending(JobType.SEND_OUTREACH, until) == 1
+    held = jobs.get_job(waiting)
+    assert held.status is JobStatus.PENDING
+    assert held.run_after == pytest.approx(until, abs=1)
+    assert held.lease_owner == ""
+    assert jobs.get_job(finished).status is JobStatus.DONE
+    assert jobs.lease("courier", types=[JobType.SEND_OUTREACH]) == []
 
 
 def test_queue_depth_reports_counts_by_status(db):

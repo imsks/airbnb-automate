@@ -208,11 +208,13 @@ def territories_needing_research(
             """SELECT t.* FROM territories t
                 LEFT JOIN territory_profiles p
                        ON p.territory_id = t.id AND p.is_current = 1
-                WHERE t.status != ?
+                WHERE t.status NOT IN (?, ?, ?)
                   AND (p.id IS NULL OR p.expires_at IS NULL OR p.expires_at < ?)
                 ORDER BY t.id ASC LIMIT ?""",
             (
                 TerritoryStatus.BLOCKED.value,
+                TerritoryStatus.VISITED.value,
+                TerritoryStatus.EXHAUSTED.value,
                 datetime.now(timezone.utc).isoformat(),
                 limit,
             ),
@@ -229,13 +231,63 @@ def researched_territories(db_path: Optional[str] = None) -> list[Territory]:
         rows = conn.execute(
             """SELECT DISTINCT t.* FROM territories t
                 JOIN territory_profiles p ON p.territory_id = t.id AND p.is_current = 1
-                WHERE t.status != ?
+                WHERE t.status NOT IN (?, ?, ?)
                 ORDER BY t.name""",
-            (TerritoryStatus.BLOCKED.value,),
+            (
+                TerritoryStatus.BLOCKED.value,
+                TerritoryStatus.VISITED.value,
+                TerritoryStatus.EXHAUSTED.value,
+            ),
         ).fetchall()
         return [_row_to_territory(r) for r in rows]
     finally:
         conn.close()
+
+
+#: How many candidate/researched/active places the office wants on hand before
+#: it stops asking the proposer for more.
+def live_territory_count(db_path: Optional[str] = None) -> int:
+    """Places still worth working: not exhausted, blocked or already visited."""
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            """SELECT COUNT(*) AS n FROM territories
+                WHERE status NOT IN (?, ?, ?)""",
+            (
+                TerritoryStatus.EXHAUSTED.value,
+                TerritoryStatus.BLOCKED.value,
+                TerritoryStatus.VISITED.value,
+            ),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+    finally:
+        conn.close()
+
+
+def all_territory_names(db_path: Optional[str] = None) -> list[str]:
+    """Every place name we already know about, in any status.
+
+    The proposer passes these to the model as a do-not-repeat list so it stops
+    re-suggesting places we have already researched, exhausted or visited.
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute("SELECT name FROM territories ORDER BY name").fetchall()
+        return [r["name"] for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_visited(
+    name: str,
+    *,
+    country: str = "",
+    db_path: Optional[str] = None,
+) -> int:
+    """Record a place as somewhere you have already been, so it is never proposed."""
+    territory_id = upsert_territory(name, country=country or "India", db_path=db_path)
+    set_status(territory_id, TerritoryStatus.VISITED, db_path=db_path)
+    return territory_id
 
 
 def record_discovery(

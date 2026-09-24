@@ -27,7 +27,7 @@ from app import jobs, policy as policy_mod
 from app.agent import planner
 from app.agent.chronicler import daily_brief
 from app.config import get_db_path
-from app.database import init_db
+from app.database import init_db, reset_pipeline
 from app.jobs import JobType, Priority
 from app.locations_md import project_locations_md, read_locations_md
 from app.logging_config import setup_logging
@@ -166,7 +166,12 @@ def cmd_campaign(args) -> int:
 def cmd_worker(args) -> int:
     from app.worker import main as worker_main
 
-    worker_main(campaign_id=args.campaign, headless=not args.no_headless, once=args.once)
+    worker_main(
+        campaign_id=args.campaign,
+        headless=not args.no_headless,
+        once=args.once,
+        role=args.role,
+    )
     return 0
 
 
@@ -285,6 +290,25 @@ def cmd_itinerary(args) -> int:
     return 0
 
 
+def cmd_reset(args) -> int:
+    """Wipe all pipeline data and start fresh, keeping the Airbnb login."""
+    if not args.yes:
+        print(
+            "This deletes ALL pipeline data — deals, leads, listings, messages, "
+            "jobs, territories, agent runs.\n"
+            "Your Airbnb login/session and your guardrails (price ceiling, kill "
+            "switch) are preserved.\n"
+            "Re-run with --yes to confirm:  python manage.py reset --yes"
+        )
+        return 1
+    wiped = reset_pipeline()
+    campaign_id = planner.ensure_system_campaign()
+    print(f"✅ Reset complete — cleared {len(wiped)} table(s).")
+    print(f"🏢 Standing deal office re-seeded (campaign #{campaign_id}).")
+    print("🔒 Preserved: Airbnb session profile, guardrails/kill switch.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="manage.py", description="Airbnb Automate v2 — campaign control"
@@ -322,10 +346,16 @@ def build_parser() -> argparse.ArgumentParser:
     campaign.add_argument("--nights", type=int, default=7)
     campaign.set_defaults(func=cmd_campaign)
 
-    worker = sub.add_parser("worker", help="drain the job queue (owns the browser)")
+    worker = sub.add_parser("worker", help="drain the job queue")
     worker.add_argument("--campaign", type=int, default=None)
     worker.add_argument("--no-headless", action="store_true", help="show the browser")
     worker.add_argument("--once", action="store_true", help="run a single job and exit")
+    worker.add_argument(
+        "--role",
+        choices=("all", "office", "courier"),
+        default="all",
+        help="office plans and drafts; courier owns the browser; all does both",
+    )
     worker.set_defaults(func=cmd_worker)
 
     api = sub.add_parser("api", help="serve the dashboard")
@@ -351,6 +381,10 @@ def build_parser() -> argparse.ArgumentParser:
     freeze.set_defaults(func=cmd_freeze)
 
     sub.add_parser("resume", help="re-enable sending").set_defaults(func=cmd_resume)
+
+    reset = sub.add_parser("reset", help="wipe all pipeline data and start fresh (keeps Airbnb login)")
+    reset.add_argument("--yes", action="store_true", help="confirm the wipe")
+    reset.set_defaults(func=cmd_reset)
 
     send_one = sub.add_parser("send-one", help="preview or send exactly one lead's message; keep bulk paused")
     send_one.add_argument("--lead", required=True, type=int)

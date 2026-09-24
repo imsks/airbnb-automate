@@ -37,6 +37,10 @@ KEY_MAX_AGENT_REPLIES = "max_agent_replies_per_thread"
 KEY_CREDENTIAL_FACTS = "credential_facts"
 KEY_ALLOW_OFF_PLATFORM = "allow_off_platform_contact"
 KEY_SINGLE_SEND = "single_message_authorization"
+#: Unix time until which Airbnb's own host-messaging cap is in effect.
+KEY_HOST_CAP_UNTIL = "airbnb_host_cap_until"
+#: Airbnb tells the guest to wait "a few hours".
+HOST_CAP_COOLDOWN_SECONDS = 3 * 60 * 60
 
 
 class GuardrailPolicy(BaseModel):
@@ -138,6 +142,44 @@ def freeze_sending(reason: str = "", db_path: Optional[str] = None) -> None:
     finally:
         conn.close()
     logger.warning("KILL SWITCH ENGAGED — all sending frozen. %s", reason)
+
+
+def note_host_messaging_cap(
+    db_path: Optional[str] = None,
+    cooldown_seconds: float = HOST_CAP_COOLDOWN_SECONDS,
+) -> float:
+    """Remember that Airbnb refused further host messages until this time."""
+    until = time.time() + max(0.0, cooldown_seconds)
+    current = host_messaging_paused_until(db_path)
+    if current > until:
+        return current
+    set_policy_value(KEY_HOST_CAP_UNTIL, until, db_path)
+    logger.warning("Airbnb host-messaging cap noted; sends wait %.0fs", until - time.time())
+    return until
+
+
+def host_messaging_paused_until(db_path: Optional[str] = None) -> float:
+    """Unix time the in-app cap lifts, or 0 when no cap is in effect."""
+    conn = get_connection(db_path)
+    try:
+        raw = _get_raw(conn, KEY_HOST_CAP_UNTIL)
+    finally:
+        conn.close()
+    if not raw:
+        return 0.0
+    try:
+        until = float(json.loads(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 0.0
+    return until if until > time.time() else 0.0
+
+
+def host_messaging_delay_seconds(db_path: Optional[str] = None) -> float:
+    """How long a new send must wait for Airbnb's cap. Zero when there is none."""
+    until = host_messaging_paused_until(db_path)
+    if not until:
+        return 0.0
+    return max(0.0, until - time.time())
 
 
 def resume_sending(db_path: Optional[str] = None) -> None:

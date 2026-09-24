@@ -313,3 +313,70 @@ def test_get_deals_by_state_filters(db):
     qualified = deals.get_deals_by_state(DealState.QUALIFIED)
     assert [d.id for d in qualified] == [first]
     assert len(deals.get_deals_by_state(DealState.QUALIFIED, DealState.DISCOVERED)) == 2
+
+
+# --- Delete & retry (Needs-a-human actions) --------------------------------
+
+
+def test_delete_removes_deal_with_its_messages_and_events(db):
+    deal_id = _deal()
+    deals.record_message(deal_id, "hello")
+    assert deals.delete(deal_id) is True
+    assert deals.get_deal(deal_id) is None
+    assert deals.get_messages(deal_id) == []
+    assert deals.get_events(deal_id) == []
+
+
+def test_delete_missing_deal_returns_false(db):
+    assert deals.delete(9999) is False
+
+
+def test_reset_for_retry_clears_messages_and_requalifies(db):
+    deal_id = _deal()
+    deals.transition(deal_id, DealState.QUALIFIED)
+    deals.transition(deal_id, DealState.NEEDS_HUMAN, reason="blocked")
+    deals.record_message(deal_id, "old blocked draft", idempotency_key="draft-1")
+
+    assert deals.reset_for_retry(deal_id) is True
+    deal = deals.get_deal(deal_id)
+    assert deal.state is DealState.QUALIFIED
+    assert deal.state_reason == "retried by human"
+    assert deals.get_messages(deal_id) == []
+    # the idempotency key is freed, so a fresh draft records again
+    assert deals.record_message(deal_id, "fresh draft", idempotency_key="draft-1")
+    assert deals.get_events(deal_id)[-1].actor == "human"
+
+
+def test_reset_for_retry_missing_deal_returns_false(db):
+    assert deals.reset_for_retry(9999) is False
+
+
+def test_abandon_rejects_a_contacted_deal(db):
+    deal_id = _deal()
+    deals.transition(deal_id, DealState.QUALIFIED)
+    deals.transition(deal_id, DealState.CONTACTED)
+    assert deals.abandon(deal_id).state is DealState.REJECTED
+
+
+def test_abandon_disqualifies_a_pre_contact_deal(db):
+    """QUALIFIED cannot reach REJECTED, so kill must fall back to DISQUALIFIED."""
+    deal_id = _deal()
+    deals.transition(deal_id, DealState.QUALIFIED)
+    assert deals.abandon(deal_id).state is DealState.DISQUALIFIED
+
+
+def test_abandon_from_needs_human_rejects(db):
+    deal_id = _deal()
+    deals.transition(deal_id, DealState.QUALIFIED)
+    deals.transition(deal_id, DealState.NEEDS_HUMAN, reason="blocked")
+    assert deals.abandon(deal_id).state is DealState.REJECTED
+
+
+def test_abandon_is_a_noop_on_a_terminal_deal(db):
+    deal_id = _deal()
+    deals.transition(deal_id, DealState.DISQUALIFIED)
+    assert deals.abandon(deal_id).state is DealState.DISQUALIFIED
+
+
+def test_abandon_missing_deal_returns_none(db):
+    assert deals.abandon(9999) is None

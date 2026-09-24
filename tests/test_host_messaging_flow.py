@@ -12,6 +12,8 @@ from app.messaging_errors import DeliveryUnconfirmed, MessageRejected
 from app.models import Listing
 from app.outreach import (
     _click_send_message,
+    choose_inbox_row,
+    choose_thread_link,
     _is_logged_in,
     _open_contact_or_message_cta,
     _send_message_to_host,
@@ -143,6 +145,148 @@ def test_oauth_popup_is_never_treated_as_airbnb_session():
     asyncio.run(scenario())
 
 
+def test_newest_inbox_row_for_that_host_and_city_is_the_thread():
+    rows = [
+        ("1", "https://www.airbnb.co.in/guest/messages/1", "Enquiry sent · Udaipur. Adil. You: Enquiry sent."),
+        ("2", "https://www.airbnb.co.in/guest/messages/2", "Enquiry sent · Jaisalmer. Akshay. You: Enquiry sent."),
+    ]
+    assert choose_inbox_row(rows, host_name="Akshay", location="Jaisalmer, Rajasthan, India")[0] == "2"
+
+
+def test_another_hosts_row_in_the_same_city_is_not_this_send():
+    rows = [
+        ("111", "https://www.airbnb.co.in/guest/messages/111", "Enquiry sent · Alleppey. Binoy. You: Enquiry sent."),
+    ]
+    assert choose_inbox_row(
+        rows, host_name="Pearl", location="Alleppey (Alappuzha), Kerala, India"
+    ) == (None, "")
+
+
+def test_inbox_row_id_is_used_when_the_link_is_only_a_hash(immediate_waits):
+    """Airbnb's inbox row address is '#'. The thread id is on the row itself."""
+
+    async def scenario():
+        async with local_page() as page:
+            async def route(request):
+                url = request.request.url
+                if "/guest/messages/777" in url:
+                    html = '<div data-testid="message-list">Hello</div>'
+                elif "/guest/inbox" in url or "/hosting/inbox" in url:
+                    html = (
+                        '<a data-testid="inbox_list_777" href="#">'
+                        "Enquiry sent · Udaipur. Adil. You: Enquiry sent."
+                        "</a>"
+                    )
+                else:
+                    html = '<textarea name="message"></textarea>'
+                await request.fulfill(status=200, content_type="text/html", body=html)
+
+            await page.route("https://www.airbnb.co.in/**", route)
+            await page.goto("https://www.airbnb.co.in/rooms/42")
+            result = await _wait_for_delivery(
+                page,
+                "Hello Adil, the lake looks lovely.",
+                timeout_ms=200,
+                clicked=True,
+                host_name="Adil",
+                location="Udaipur, Rajasthan, India",
+            )
+            assert result[0] == "777"
+
+    asyncio.run(scenario())
+
+
+def test_message_preview_picks_the_thread_it_was_sent_to():
+    links = [
+        ("1", "https://www.airbnb.co.in/guest/messages/1", "Asha — see you in May"),
+        ("2", "https://www.airbnb.co.in/guest/messages/2", "Hello Peggy, the garden looks lovely."),
+    ]
+    assert choose_thread_link(links, "Hello Peggy, the garden looks lovely.", "Asha")[0] == "2"
+
+
+def test_one_host_row_identifies_the_thread_when_the_preview_is_cut_off():
+    links = [
+        ("1", "https://www.airbnb.co.in/guest/messages/1", "Conversation with Asha"),
+        ("9", "https://www.airbnb.co.in/guest/messages/9", "Conversation with Peggy"),
+    ]
+    assert choose_thread_link(links, "totally different wording", "Peggy")[0] == "9"
+
+
+def test_two_unnamed_threads_are_not_guessed():
+    links = [
+        ("1", "https://www.airbnb.co.in/guest/messages/1", "Inbox"),
+        ("2", "https://www.airbnb.co.in/guest/messages/2", "Inbox"),
+    ]
+    assert choose_thread_link(links, "Hello Peggy", "") == (None, "")
+
+
+def test_a_listing_send_is_confirmed_by_opening_the_inbox(immediate_waits):
+    """The listing stays put after Send. The new thread is in the inbox."""
+
+    body = "Hello Peggy, the garden looks lovely."
+
+    async def scenario():
+        async with local_page() as page:
+            async def route(request):
+                url = request.request.url
+                if "/guest/messages/555" in url:
+                    html = '<div data-testid="message-list">' + body + "</div>"
+                elif any(part in url for part in ("/messaging", "/guest/inbox", "/hosting/inbox")):
+                    html = (
+                        '<a href="/guest/messages/111">Enquiry sent · Kochi. Binoy.</a>'
+                        '<a data-testid="inbox_list_555" href="#">'
+                        "Enquiry sent · Alleppey. Peggy. You: Enquiry sent."
+                        "</a>"
+                    )
+                else:
+                    html = '<textarea name="message"></textarea>'
+                await request.fulfill(status=200, content_type="text/html", body=html)
+
+            await page.route("https://www.airbnb.co.in/**", route)
+            await page.goto("https://www.airbnb.co.in/rooms/42")
+            result = await _wait_for_delivery(
+                page, body, timeout_ms=200, clicked=True, host_name="Peggy"
+            )
+            assert result[0] == "555"
+            assert result[1].endswith("/guest/messages/555")
+
+    asyncio.run(scenario())
+
+
+def test_the_thread_already_open_in_the_inbox_is_not_this_send(immediate_waits, monkeypatch):
+    """Opening the inbox lands on the previous conversation. That is not the send."""
+    monkeypatch.setattr("app.outreach._INBOX_LOOKUP_SECONDS", 0)
+
+    async def scenario():
+        async with local_page() as page:
+            async def route(request):
+                url = request.request.url
+                if "/guest/inbox" in url or "/hosting/inbox" in url:
+                    html = (
+                        '<a href="/guest/messages/111">Enquiry sent · Kochi. Binoy.</a>'
+                        '<a data-testid="inbox_list_111" href="#">'
+                        "Enquiry sent · Kochi. Binoy. You: Enquiry sent."
+                        "</a>"
+                    )
+                else:
+                    html = '<textarea name="message"></textarea>'
+                await request.fulfill(status=200, content_type="text/html", body=html)
+
+            await page.route("https://www.airbnb.co.in/**", route)
+            await page.goto("https://www.airbnb.co.in/rooms/42")
+            with pytest.raises(DeliveryUnconfirmed, match="no conversation was open"):
+                await _wait_for_delivery(
+                    page,
+                    "Hello Pearl, the cottage looks lovely.",
+                    timeout_ms=200,
+                    clicked=True,
+                    host_name="Pearl",
+                    location="Alleppey (Alappuzha), Kerala, India",
+                )
+
+    asyncio.run(scenario())
+
+
 def test_filling_a_composer_is_not_delivery_confirmation():
     async def scenario():
         async with local_page() as page:
@@ -250,5 +394,33 @@ def test_real_browser_send_requires_persisted_conversation(immediate_waits):
             assert result == ("987654", "https://www.airbnb.co.in/guest/inbox/987654")
             assert checks == ["authorized"]
             assert len(thread_loads) == 2
+
+    asyncio.run(scenario())
+
+
+def test_visible_conversation_confirms_delivery_without_the_message_bubble(immediate_waits):
+    """Airbnb shows the thread, but the new bubble is not in the old selectors."""
+
+    async def scenario():
+        async with local_page() as page:
+            async def route(request):
+                path = request.request.url
+                if "/rooms/" in path:
+                    html = '<h1>Garden room</h1><a href="/contact_host/42/send_message">Message host</a>'
+                elif "/contact_host/" in path:
+                    html = '''<h1>Message Peggy</h1><textarea name="message"></textarea>
+                        <button onclick="location.href='/hosting/inbox/folder/all/thread/555'">Send message</button>'''
+                else:
+                    html = '<div data-testid="message-list"><h1>Conversation with Peggy</h1></div>'
+                await request.fulfill(status=200, content_type="text/html", body=html)
+
+            await page.route("https://www.airbnb.co.in/**", route)
+            result = await _send_message_to_host(
+                page, Listing(id="42", title="Garden room"), "Hello Peggy, the garden looks lovely."
+            )
+            assert result == (
+                "555",
+                "https://www.airbnb.co.in/hosting/inbox/folder/all/thread/555",
+            )
 
     asyncio.run(scenario())

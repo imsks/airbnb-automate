@@ -96,9 +96,11 @@ def test_uncertain_delivery_is_not_automatically_retried(setup, monkeypatch):
     asyncio.run(scribe.send_outreach_for_lead(lead_id, db_path=path))
     assert send.await_count == 1
     assert deals.get_message(draft["message_id"], path).status is MessageStatus.SENDING
-    assert deals.get_deal(draft["deal_id"], path).state is DealState.NEEDS_HUMAN
+    # The click may have landed, so this draft is not retried. The rest of the
+    # queue stays live: the deal is not escalated and sending is not frozen.
+    assert deals.get_deal(draft["deal_id"], path).state is not DealState.NEEDS_HUMAN
     assert budget_status(path)["used"] == 1
-    assert not policy.sending_enabled(path)
+    assert policy.sending_enabled(path)
 
 
 def test_a_refused_message_is_rewritten_rather_than_resent(setup, monkeypatch):
@@ -150,8 +152,10 @@ def test_rewriting_gives_up_rather_than_looping(setup, monkeypatch):
     deals.mark_message_rejected(first["message_id"], "superseded", path)
 
     result = scribe.prepare_outreach(lead_id, preview=True, db_path=path)
-    assert result["status"] == "blocked"
+    # A mechanical block a rewrite cannot fix is dropped, not parked for a human.
+    assert result["status"] == "dropped"
     assert scribe.compose.call_count <= 4
+    assert deals.get_deal(first["deal_id"], path).state is not DealState.NEEDS_HUMAN
 
 
 def test_rejected_text_change_does_not_consume_single_permission(setup):
@@ -184,11 +188,12 @@ def test_no_permission_is_written_on_failure(setup):
 
 def test_dashboard_shows_exact_draft_and_failure_reason(setup):
     from app.agent.chronicler import daily_brief
-    from app.api.dashboard import render_dashboard
+    from app.api.dashboard import render_dashboard, render_messages
 
     path, _lead, draft = setup
     deals.mark_message_failed(draft["message_id"], "Login needed; nothing submitted", path)
-    html = render_dashboard(daily_brief(path))
+    html = render_messages(daily_brief(path).get("messages", []))
+    assert draft["message"] not in render_dashboard(daily_brief(path))
     assert "Messages — drafts and delivery" in html
     assert draft["message"] in html
     assert "Login needed; nothing submitted" in html
@@ -197,10 +202,10 @@ def test_dashboard_shows_exact_draft_and_failure_reason(setup):
 
 def test_dashboard_escapes_untrusted_draft_text(setup):
     from app.agent.chronicler import daily_brief
-    from app.api.dashboard import render_dashboard
+    from app.api.dashboard import render_messages
 
     path, _lead, draft = setup
     deals.record_message(draft["deal_id"], '<script>alert("not executable")</script>', agent="scribe", db_path=path)
-    html = render_dashboard(daily_brief(path))
+    html = render_messages(daily_brief(path).get("messages", []))
     assert '<script>alert("not executable")</script>' not in html
     assert "&lt;script&gt;" in html

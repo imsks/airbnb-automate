@@ -2,8 +2,7 @@
 
 Scrapes conversation threads from the Airbnb inbox using the persisted
 browser session.  Uses ``aria-label`` attributes and ``data-testid``
-selectors matching the actual Airbnb DOM structure (verified against
-real HTML snapshots in ``test/chat_list.html`` and ``test/chat.html``).
+selectors matching the actual Airbnb DOM structure.
 """
 
 from __future__ import annotations

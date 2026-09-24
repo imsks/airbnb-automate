@@ -6,6 +6,7 @@ import pytest
 
 from app import config
 from app.config import (
+    get_browser_state_path,
     get_browser_user_agent,
     get_browser_user_data_dir,
     get_playwright_channel,
@@ -68,6 +69,11 @@ def test_get_browser_user_data_dir_relative(monkeypatch):
     assert result.endswith("persist_test")
     assert Path(result).is_absolute()
     assert str(result).startswith(str(config.BASE_DIR))
+
+
+def test_browser_state_sits_beside_the_database(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "airbnb_automate.db"))
+    assert get_browser_state_path() == str(tmp_path / "browser_state.json")
 
 
 def test_get_browser_user_data_dir_absolute(monkeypatch, tmp_path):

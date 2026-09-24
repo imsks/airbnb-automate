@@ -65,6 +65,46 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
+#: Tables a reset must never touch — the migration ledger and the live guardrails
+#: (price ceiling, kill switch) that should survive a fresh start.
+RESET_PRESERVE_TABLES = frozenset({"schema_migrations", "policy"})
+
+
+def reset_pipeline(
+    db_path: Optional[str] = None, preserve: Optional[frozenset] = None
+) -> list[str]:
+    """Delete every row of pipeline data, keeping schema and guardrails intact.
+
+    This is the "start fresh" button: it clears deals, leads, listings, jobs,
+    messages, territories and the rest, but preserves ``policy`` (your ceiling
+    and kill switch) and ``schema_migrations`` so the DB stays at the current
+    version. The Airbnb browser session lives on disk, not in SQLite, so it is
+    untouched. Returns the sorted list of tables that were cleared.
+    """
+    keep = preserve if preserve is not None else RESET_PRESERVE_TABLES
+    conn = get_connection(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        wiped: list[str] = []
+        for table in tables:
+            if table in keep:
+                continue
+            conn.execute(f"DELETE FROM {table}")  # table names come from sqlite_master
+            wiped.append(table)
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.commit()
+        return sorted(wiped)
+    finally:
+        conn.close()
+
+
 def init_db(db_path: Optional[str] = None) -> None:
     """Bring the database up to the latest schema version."""
     conn = get_connection(db_path)
@@ -250,6 +290,18 @@ def get_listings(search_id: int, db_path: Optional[str] = None) -> list[Listing]
         ).fetchall()
 
         return [_listing_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_listing(listing_id: str, db_path: Optional[str] = None) -> Optional[Listing]:
+    """Fetch a single listing by its global id, regardless of which search found it."""
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM listings WHERE id = ?", (listing_id,)
+        ).fetchone()
+        return _listing_from_row(row) if row else None
     finally:
         conn.close()
 

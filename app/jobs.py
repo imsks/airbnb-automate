@@ -32,11 +32,13 @@ _BACKOFF_CAP_SECONDS = 3600.0
 class JobType:
     """Canonical job type names. Workers dispatch on these."""
 
+    PROPOSE_TERRITORIES = "propose_territories"
     RESEARCH_TERRITORY = "research_territory"
     PLAN_ROUTE = "plan_route"
     DISCOVER_LEADS = "discover_leads"
     ENRICH_LEAD = "enrich_lead"
     SCORE_LEAD = "score_lead"
+    DRAFT_OUTREACH = "draft_outreach"
     SEND_OUTREACH = "send_outreach"
     SYNC_INBOX = "sync_inbox"
     NEGOTIATE_DEAL = "negotiate_deal"
@@ -44,6 +46,7 @@ class JobType:
     SWEEP_STALE = "sweep_stale"
     DAILY_BRIEF = "daily_brief"
     PLANNER_TICK = "planner_tick"
+    PULL_PORTAL_CONTEXT = "pull_portal_context"
 
 
 #: Job types that put a message in front of a host. These must always carry an
@@ -52,6 +55,50 @@ SENDING_JOB_TYPES: frozenset[str] = frozenset(
     {JobType.SEND_OUTREACH, JobType.NEGOTIATE_DEAL}
 )
 
+#: The office plans and writes. None of these touch Playwright, so they keep
+#: running even when the Airbnb session is dead. Drafting an opening message is
+#: office work; *delivering* it is not.
+OFFICE_JOB_TYPES: frozenset[str] = frozenset(
+    {
+        JobType.PROPOSE_TERRITORIES,
+        JobType.RESEARCH_TERRITORY,
+        JobType.PLAN_ROUTE,
+        JobType.SCORE_LEAD,
+        JobType.DRAFT_OUTREACH,
+        JobType.EXTRACT_TERMS,
+        JobType.SWEEP_STALE,
+        JobType.DAILY_BRIEF,
+        JobType.PLANNER_TICK,
+        JobType.PULL_PORTAL_CONTEXT,
+    }
+)
+
+#: The courier is the only role that holds the browser: it discovers and
+#: enriches listings, delivers saved drafts, syncs the inbox and negotiates.
+COURIER_JOB_TYPES: frozenset[str] = frozenset(
+    {
+        JobType.DISCOVER_LEADS,
+        JobType.ENRICH_LEAD,
+        JobType.SEND_OUTREACH,
+        JobType.SYNC_INBOX,
+        JobType.NEGOTIATE_DEAL,
+    }
+)
+
+
+def job_types_for_role(role: str) -> Optional[frozenset[str]]:
+    """The job types a worker of ``role`` may lease.
+
+    ``"all"`` (the local single-process default) leases everything, so it
+    returns ``None`` — the sentinel :func:`lease` reads as "no type filter".
+    """
+    normalised = (role or "all").strip().lower()
+    if normalised == "office":
+        return OFFICE_JOB_TYPES
+    if normalised == "courier":
+        return COURIER_JOB_TYPES
+    return None
+
 
 class Priority:
     """Lower runs first. A warm thread outranks any cold outreach."""
@@ -59,6 +106,9 @@ class Priority:
     NEGOTIATION = 10
     INBOX_SYNC = 20
     OUTREACH = 50
+    #: Writing a draft outranks discovery/enrichment so the courier rarely
+    #: starves, but stays below a live send.
+    DRAFTING = 60
     ENRICHMENT = 70
     RESEARCH = 90
     HOUSEKEEPING = 200
@@ -205,6 +255,40 @@ def lease(
         conn.close()
 
 
+def reopen_paused_send(
+    idempotency_key: str, db_path: Optional[str] = None
+) -> Optional[int]:
+    """Run a finished send job again when the kill switch parked it unsent.
+
+    A job that completed as ``blocked`` never reached a host. Leaving it
+    ``done`` would make the idempotency key swallow every later attempt.
+    """
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, status, result_json, last_error FROM jobs WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+        if row is None or row["status"] not in (JobStatus.DONE.value, JobStatus.FAILED.value):
+            return None
+        result = json.loads(row["result_json"] or "{}")
+        reason = f"{result.get('reason') or ''} {row['last_error'] or ''}"
+        if result.get("status") == "sent" or "kill_switch" not in reason:
+            return None
+        conn.execute(
+            """UPDATE jobs
+                  SET status = ?, result_json = '{}', last_error = '',
+                      attempts = 0, run_after = ?, lease_until = NULL,
+                      lease_owner = '', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?""",
+            (JobStatus.PENDING.value, time.time(), row["id"]),
+        )
+        conn.commit()
+        return int(row["id"])
+    finally:
+        conn.close()
+
+
 def complete(
     job_id: int,
     result: Optional[dict[str, Any]] = None,
@@ -276,6 +360,34 @@ def fail(job_id: int, error: str, db_path: Optional[str] = None) -> JobStatus:
         conn.close()
 
 
+def defer_pending(job_type: str, until: float, db_path: Optional[str] = None) -> int:
+    """Hold queued and in-flight jobs of one type until ``until``.
+
+    Used when Airbnb's own cap is up, so the courier stops clicking Send.
+    Finished jobs are left as they are. Returns how many rows moved.
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """UPDATE jobs
+                  SET status = ?, run_after = ?, lease_until = NULL,
+                      lease_owner = '', updated_at = CURRENT_TIMESTAMP
+                WHERE type = ? AND status IN (?, ?) AND run_after < ?""",
+            (
+                JobStatus.PENDING.value,
+                until,
+                job_type,
+                JobStatus.PENDING.value,
+                JobStatus.LEASED.value,
+                until,
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def cancel(job_id: int, reason: str = "", db_path: Optional[str] = None) -> None:
     """Cancel a job so it is never retried."""
     conn = get_connection(db_path)
@@ -288,6 +400,33 @@ def cancel(job_id: int, reason: str = "", db_path: Optional[str] = None) -> None
             (JobStatus.CANCELLED.value, reason[:2000], job_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def cancel_for_deal(deal_id: int, reason: str = "", db_path: Optional[str] = None) -> int:
+    """Cancel every not-yet-finished job attached to a deal. Returns the count.
+
+    Backs the Needs-a-human "Kill" action: stop the office from doing any more
+    work on a deal a human has decided to abandon.
+    """
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """UPDATE jobs
+                  SET status = ?, last_error = ?, lease_until = NULL,
+                      lease_owner = '', updated_at = CURRENT_TIMESTAMP
+                WHERE deal_id = ? AND status IN (?, ?)""",
+            (
+                JobStatus.CANCELLED.value,
+                (reason or "deal killed by human")[:2000],
+                deal_id,
+                JobStatus.PENDING.value,
+                JobStatus.LEASED.value,
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount
     finally:
         conn.close()
 
@@ -319,6 +458,24 @@ def get_job(job_id: int, db_path: Optional[str] = None) -> Optional[Job]:
     try:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return _row_to_job(row) if row else None
+    finally:
+        conn.close()
+
+
+def count_active(job_type: str, db_path: Optional[str] = None) -> int:
+    """How many jobs of ``job_type`` are pending or leased right now.
+
+    The planner uses this to keep at most one open proposal in flight rather
+    than piling identical "think of new places" jobs onto the queue.
+    """
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            """SELECT COUNT(*) AS n FROM jobs
+                WHERE type = ? AND status IN (?, ?)""",
+            (job_type, JobStatus.PENDING.value, JobStatus.LEASED.value),
+        ).fetchone()
+        return int(row["n"]) if row else 0
     finally:
         conn.close()
 

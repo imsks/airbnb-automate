@@ -8,40 +8,35 @@ the API stay responsive while a scrape runs for minutes.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from app import activity as activity_feeds
 from app import campaigns as campaign_repo
 from app import deals as deal_repo
 from app import jobs, leads as lead_repo, policy as policy_mod, territories as territory_repo
-from app.agent import planner
+from app import portals as portal_repo
 from app.agent.chronicler import daily_brief
-from app.api.dashboard import render_dashboard
-from app.database import init_db
+from app.api.dashboard import (
+    render_attention,
+    render_dashboard,
+    render_lead_detail,
+    render_leads,
+    render_logs,
+    render_loops,
+    render_messages,
+    render_ready,
+)
+from app.database import get_listing, init_db
 from app.jobs import JobType, Priority
-from app.locations_md import project_locations_md, read_locations_md
 from app.logging_config import recent_activity
-from app.models import Campaign, CampaignStatus, DealState
+from app.models import DealState
 from app.send_budget import budget_status
 
 logger = logging.getLogger(__name__)
-
-
-class CampaignRequest(BaseModel):
-    """A new travel campaign and the places it may consider."""
-
-    name: str
-    goal: str = ""
-    window_start: str = Field("", description="YYYY-MM")
-    window_end: str = Field("", description="YYYY-MM")
-    origin: str = ""
-    guests: int = 2
-    stay_nights: int = 7
-    places: list[str] = Field(default_factory=list)
 
 
 class PolicyRequest(BaseModel):
@@ -53,12 +48,6 @@ class PolicyRequest(BaseModel):
     allow_specific_dates: Optional[bool] = None
 
 
-def _suggested_places() -> list[str]:
-    """Destinations from locations.md, offered as a starting point in the UI."""
-    path = project_locations_md(Path(__file__).resolve().parents[2])
-    return read_locations_md(path) if path.exists() else []
-
-
 def create_app(db_path: Optional[str] = None) -> FastAPI:
     """Build the API. ``db_path`` is for tests; production uses the configured DB."""
     init_db(db_path)
@@ -66,17 +55,46 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> str:
-        return render_dashboard(
-            daily_brief(db_path),
-            activity=recent_activity(40),
-            campaigns=campaign_repo.list_campaigns(db_path),
-            suggested_places=_suggested_places(),
+        return render_dashboard(daily_brief(db_path))
+
+    @app.get("/messages", response_class=HTMLResponse)
+    def messages_page() -> str:
+        return render_messages(daily_brief(db_path).get("messages", []))
+
+    @app.get("/attention", response_class=HTMLResponse)
+    def attention_page() -> str:
+        return render_attention(daily_brief(db_path)["queues"]["needs_human"])
+
+    @app.get("/ready", response_class=HTMLResponse)
+    def ready_page() -> str:
+        return render_ready(daily_brief(db_path)["queues"]["ready_to_book"])
+
+    @app.get("/loops", response_class=HTMLResponse)
+    def loops_page() -> str:
+        return render_loops(
+            activity_feeds.office_feed(25, db_path),
+            activity_feeds.courier_feed(25, db_path),
+            campaign_repo.list_campaigns(db_path),
         )
+
+    @app.get("/logs", response_class=HTMLResponse)
+    def logs_page() -> str:
+        return render_logs(recent_activity(40))
 
     @app.get("/api/activity")
     def activity(limit: int = 60) -> list[dict]:
         """What the agents have been doing, newest first."""
         return recent_activity(limit)
+
+    @app.get("/api/activity/office")
+    def office_activity(limit: int = 25) -> list[dict]:
+        """The office loop's recent work, from the durable job record."""
+        return activity_feeds.office_feed(limit, db_path)
+
+    @app.get("/api/activity/courier")
+    def courier_activity(limit: int = 25) -> list[dict]:
+        """The courier loop's recent work, from the durable job record."""
+        return activity_feeds.courier_feed(limit, db_path)
 
     @app.get("/api/brief")
     def brief() -> dict:
@@ -142,32 +160,68 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
         )
         return deal.model_dump(mode="json")
 
+    @app.post("/api/deals/{deal_id}/retry")
+    def retry_deal(deal_id: int) -> dict:
+        """Start this host over: clear the thread and let the office redraft."""
+        deal = deal_repo.get_deal(deal_id, db_path)
+        if deal is None:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        deal_repo.reset_for_retry(deal_id, db_path)
+        if deal.lead_id is not None:
+            jobs.enqueue(
+                JobType.DRAFT_OUTREACH,
+                {"lead_id": deal.lead_id, "listing_id": deal.listing_id},
+                priority=Priority.DRAFTING,
+                campaign_id=deal.campaign_id,
+                deal_id=deal_id,
+                db_path=db_path,
+            )
+        return {"deal_id": deal_id, "status": "retrying"}
+
+    @app.post("/api/deals/{deal_id}/kill")
+    def kill_deal(deal_id: int, reason: str = "") -> dict:
+        """Stop all work on a deal: reject it and cancel its pending jobs."""
+        deal = deal_repo.get_deal(deal_id, db_path)
+        if deal is None:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        deal_repo.abandon(
+            deal_id, reason=reason or "stopped by human", actor="human", db_path=db_path
+        )
+        cancelled = jobs.cancel_for_deal(deal_id, db_path=db_path)
+        return {"deal_id": deal_id, "status": "killed", "jobs_cancelled": cancelled}
+
+    @app.delete("/api/deals/{deal_id}")
+    def delete_deal(deal_id: int) -> dict:
+        """Hard-delete a deal and its messages/events."""
+        deleted = deal_repo.delete(deal_id, db_path)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        return {"deal_id": deal_id, "status": "deleted"}
+
+    # --- Leads -------------------------------------------------------------
+
+    @app.get("/api/leads")
+    def list_leads(campaign_id: int = 0) -> list[dict]:
+        return lead_repo.list_leads_with_listing(campaign_id, db_path=db_path)
+
+    @app.get("/leads", response_class=HTMLResponse)
+    def leads_page() -> str:
+        return render_leads(lead_repo.list_leads_with_listing(db_path=db_path))
+
+    @app.get("/leads/{lead_id}", response_class=HTMLResponse)
+    def lead_detail_page(lead_id: int) -> str:
+        lead = lead_repo.get_lead(lead_id, db_path)
+        if lead is None:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        listing = get_listing(lead.listing_id, db_path)
+        context = portal_repo.get_context_for_listing(lead.listing_id, db_path=db_path)
+        return render_lead_detail(lead, listing, context)
+
     # --- Campaigns ---------------------------------------------------------
 
     @app.get("/api/campaigns")
     def list_campaigns() -> list[dict]:
         return [c.model_dump(mode="json") for c in campaign_repo.list_campaigns(db_path)]
-
-    @app.post("/api/campaigns")
-    def create_campaign(request: CampaignRequest) -> dict:
-        campaign = Campaign(
-            name=request.name,
-            goal=request.goal,
-            window_start=request.window_start,
-            window_end=request.window_end,
-            origin=request.origin,
-            guests=request.guests,
-            stay_nights=request.stay_nights,
-            status=CampaignStatus.ACTIVE,
-        )
-        places = request.places or _suggested_places()
-        campaign_id = planner.bootstrap_campaign(campaign, places, db_path)
-        queued = planner.plan_tick(campaign_id, db_path)
-        return {
-            "campaign_id": campaign_id,
-            "territories": len(places),
-            "queued": queued["total"],
-        }
 
     @app.get("/api/campaigns/{campaign_id}/itinerary")
     def itinerary(campaign_id: int) -> list[dict]:
@@ -180,34 +234,11 @@ def create_app(db_path: Optional[str] = None) -> FastAPI:
             out.append(payload)
         return out
 
-    @app.post("/api/campaigns/{campaign_id}/tick")
-    def tick(campaign_id: int) -> dict:
-        return planner.plan_tick(campaign_id, db_path)
-
     # --- Jobs --------------------------------------------------------------
 
     @app.get("/api/jobs")
     def job_queue() -> dict:
         return jobs.queue_depth(db_path)
-
-    @app.post("/api/jobs/sync-inbox")
-    def queue_inbox_sync() -> dict:
-        job_id = jobs.enqueue(
-            JobType.SYNC_INBOX, priority=Priority.INBOX_SYNC, db_path=db_path
-        )
-        return {"job_id": job_id}
-
-    @app.post("/api/jobs/retry-failed")
-    def retry_failed_jobs() -> dict:
-        """Requeue jobs that exhausted their retries, e.g. after a fix ships."""
-        return {"requeued": jobs.retry_failed(db_path=db_path)}
-
-    @app.post("/api/jobs/sweep")
-    def queue_sweep() -> dict:
-        job_id = jobs.enqueue(
-            JobType.SWEEP_STALE, priority=Priority.HOUSEKEEPING, db_path=db_path
-        )
-        return {"job_id": job_id}
 
     # --- Policy & kill switch ----------------------------------------------
 

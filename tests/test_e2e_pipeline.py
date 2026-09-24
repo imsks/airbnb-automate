@@ -18,7 +18,7 @@ from app import deals as deal_repo
 from app import jobs, leads as lead_repo, territories as territory_repo
 from app.agent import planner
 from app.agent.chronicler import daily_brief
-from app.api.dashboard import render_dashboard
+from app.api.dashboard import render_ready
 from app.database import get_connection, init_db
 from app.jobs import JobType
 from app.models import Campaign, CampaignStatus, DealState, MessageStatus
@@ -206,17 +206,30 @@ def test_deal_walks_from_discovered_to_ready_to_book(db):
     assert deal.host_name == "Asha"
     assert lead_repo.get_lead(lead_id, db).collab_fit_score > 0.5
 
-    # 2. Outreach → sent, thread linked, state CONTACTED.
+    # 2a. Draft (office) → a ready message is staged; the office never sends.
+    jobs.enqueue(
+        JobType.DRAFT_OUTREACH,
+        {"lead_id": lead_id, "listing_id": "L1"},
+        idempotency_key="draft:0:L1",
+        db_path=db,
+    )
+    with patch("app.agent.scribe.get_llm", return_value=_llm(_OUTREACH_TEXT)):
+        _run_worker_until_idle(worker)
+
+    staged = deal_repo.get_messages(deal.id, db)[-1]
+    assert staged.status is MessageStatus.PENDING  # drafted, waiting on the courier
+
+    # 2b. Send (courier) → delivered from the saved draft, thread linked.
     jobs.enqueue(
         JobType.SEND_OUTREACH,
-        {"lead_id": lead_id},
-        idempotency_key=f"outreach:0:L1",
+        {"lead_id": lead_id, "listing_id": "L1"},
+        idempotency_key="outreach:0:L1",
         db_path=db,
     )
     send = AsyncMock(return_value=("T900", "https://airbnb.com/messages/thread/T900"))
-    with patch("app.agent.scribe.get_llm", return_value=_llm(_OUTREACH_TEXT)), patch(
-        "app.outreach._send_message_to_host", send
-    ), patch("app.agent.scribe.airbnb_page", _fake_page):
+    with patch("app.outreach._send_message_to_host", send), patch(
+        "app.agent.scribe.airbnb_page", _fake_page
+    ):
         _run_worker_until_idle(worker)
 
     deal = deal_repo.get_deal(deal.id, db)
@@ -258,7 +271,7 @@ def test_deal_walks_from_discovered_to_ready_to_book(db):
     brief = daily_brief(db)
     assert len(brief["queues"]["ready_to_book"]) == 1
     assert brief["north_star"]["deals_closed"] == 1
-    assert "Sea Villa" in render_dashboard(brief)
+    assert "Sea Villa" in render_ready(brief["queues"]["ready_to_book"])
 
 
 def test_retrying_an_outreach_job_never_sends_twice(db):

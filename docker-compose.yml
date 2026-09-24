@@ -1,0 +1,62 @@
+# Always-on deal office: three long-lived services sharing one data volume.
+#
+#   office   — plans, researches and drafts. No browser. Keeps running even when
+#              the Airbnb session is dead.
+#   courier  — the ONLY service that holds the browser: discovers, enriches,
+#              sends drafts, syncs the inbox and negotiates.
+#   api      — the phone dashboard and control surface.
+#
+# All three share the SQLite database in `./data`. That is safe
+# because the app is built for multiple processes on one host: every connection
+# opens WAL mode and the job queue claims rows with BEGIN IMMEDIATE, so no two
+# workers can ever grab the same job. Run this on a box that stays on, and reach
+# the dashboard over a private network (e.g. Tailscale) rather than a public URL.
+#
+# `./data` is the same directory `make login` writes, so the courier picks up
+# the Airbnb profile and the SQLite database from the host.
+#
+# Store follow-up: moving from the shared SQLite volume to Postgres (and pgvector
+# for long scraped-page context) is the intended next step. It is deliberately
+# out of this compose so the test suite keeps running on SQLite as the safety
+# net — see the plan's Deploy note. When you migrate, add a `postgres` service
+# here and point DATABASE_URL at it.
+
+x-app: &app
+  image: airbnb-automate:latest
+  env_file: .env
+  environment:
+    DATABASE_PATH: /data/airbnb_automate.db
+    # A Linux profile. The host Chrome profile is a different browser; the
+    # courier loads the cookie backup that `make login` saved next to the DB.
+    BROWSER_USER_DATA_DIR: /data/courier_browser_profile
+    HEADLESS: "true"
+    # The image has Playwright's Chromium, not the host's Google Chrome.
+    PLAYWRIGHT_CHANNEL: ""
+  volumes:
+    - ./data:/data
+  restart: unless-stopped
+
+services:
+  office:
+    <<: *app
+    # Build once. Courier and API reuse this image. Giving all three a build
+    # makes Compose tag airbnb-automate:latest in parallel, and the later
+    # exports fail with "image already exists".
+    build: .
+    command: python manage.py worker --role office
+
+  courier:
+    <<: *app
+    # The courier drains browser jobs. It reads the Airbnb profile that
+    # `make login` saved under ./data. Without a live session it pauses and pings you.
+    command: python manage.py worker --role courier
+    depends_on:
+      - office
+
+  api:
+    <<: *app
+    command: python manage.py api --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - office

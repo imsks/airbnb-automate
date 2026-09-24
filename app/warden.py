@@ -46,8 +46,22 @@ class Rule:
     PLATFORM_TERMS = "platform_terms"
 
 
-#: Violations a fresh draft can clear on its own, with no human judgement.
-_REVISABLE_RULES = frozenset({Rule.PLATFORM_TERMS})
+#: Violations a fresh opening draft can clear on its own, with no human
+#: judgement: they are wording problems, not commitments. If a rewrite still
+#: cannot clear them, the office drops the draft rather than parking the deal.
+#: Deliberately excludes the rules that encode a real decision — off-platform,
+#: price ceiling, per-thread reply cap and the kill switch — which must reach a
+#: human (or, for the switch, simply wait for a resume).
+_REVISABLE_RULES = frozenset(
+    {
+        Rule.PLATFORM_TERMS,
+        Rule.SPECIFIC_DATES,
+        Rule.DELIVERABLES,
+        Rule.CREDENTIALS,
+        Rule.CONTACT_INFO,
+        Rule.TOO_LONG,
+    }
+)
 
 
 @dataclass(frozen=True)

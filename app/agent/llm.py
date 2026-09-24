@@ -12,6 +12,18 @@ def _get_env(key: str, default: str = "") -> str:
     return (os.getenv(key) or default).strip()
 
 
+def _rebuild(model_cls: type) -> None:
+    """Resolve forward refs that langchain-core 0.3.28 leaves dangling.
+
+    Pydantic >= 2.11 refuses to instantiate a chat model until ``BaseCache``
+    and ``Callbacks`` are defined, so hand them in explicitly.
+    """
+    from langchain_core.caches import BaseCache
+    from langchain_core.callbacks import Callbacks
+
+    model_cls.model_rebuild(_types_namespace={"BaseCache": BaseCache, "Callbacks": Callbacks})
+
+
 @lru_cache(maxsize=1)
 def get_llm(
     *,
@@ -32,6 +44,8 @@ def get_llm(
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore[import-untyped]
 
+        _rebuild(ChatGoogleGenerativeAI)
+
         chosen_model = model or _get_env("GEMINI_MODEL", "gemini-2.5-flash")
         return ChatGoogleGenerativeAI(
             model=chosen_model,
@@ -42,6 +56,7 @@ def get_llm(
     if provider == "perplexity":
         from langchain_openai import ChatOpenAI
 
+        _rebuild(ChatOpenAI)
         chosen_model = model or _get_env("PERPLEXITY_MODEL", "sonar-pro")
         return ChatOpenAI(
             model=chosen_model,
@@ -53,6 +68,7 @@ def get_llm(
     # Default: OpenAI
     from langchain_openai import ChatOpenAI
 
+    _rebuild(ChatOpenAI)
     chosen_model = model or _get_env("OPENAI_MODEL", "gpt-4o-mini")
     return ChatOpenAI(
         model=chosen_model,

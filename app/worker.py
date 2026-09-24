@@ -57,19 +57,27 @@ class Worker:
         headless: bool = True,
         db_path: Optional[str] = None,
         name: str = "worker-1",
+        role: str = "all",
     ) -> None:
         self.campaign_id = campaign_id
         self.headless = headless
         self.db_path = db_path
         self.name = name
+        #: ``office`` plans and drafts, ``courier`` owns the browser, ``all`` is
+        #: the local single process that does both. The role narrows which job
+        #: types this worker will lease.
+        self.role = (role or "all").strip().lower()
+        self._lease_types = jobs.job_types_for_role(self.role)
         self._stop = False
         self._last_tick = 0.0
         self._handlers: dict[str, Callable[[Job], Any]] = {
+            JobType.PROPOSE_TERRITORIES: self._propose_territories,
             JobType.RESEARCH_TERRITORY: self._research_territory,
             JobType.PLAN_ROUTE: self._plan_route,
             JobType.DISCOVER_LEADS: self._discover_leads,
             JobType.ENRICH_LEAD: self._enrich_lead,
             JobType.SCORE_LEAD: self._score_lead,
+            JobType.DRAFT_OUTREACH: self._draft_outreach,
             JobType.SEND_OUTREACH: self._send_outreach,
             JobType.SYNC_INBOX: self._sync_inbox,
             JobType.NEGOTIATE_DEAL: self._negotiate_deal,
@@ -77,7 +85,11 @@ class Worker:
             JobType.SWEEP_STALE: self._sweep_stale,
             JobType.DAILY_BRIEF: self._daily_brief,
             JobType.PLANNER_TICK: self._planner_tick,
+            JobType.PULL_PORTAL_CONTEXT: self._pull_portal_context,
         }
+        #: Injected Booking.com fetcher; ``None`` keeps portal pulls a clean
+        #: no-op until a real scraper is wired (and lets tests supply a fake).
+        self._portal_fetcher = None
 
     def stop(self) -> None:
         """Ask the loop to finish the current job and exit."""
@@ -92,9 +104,16 @@ class Worker:
         )
         from app.config import get_db_path
 
+        # The office owns the standing campaign; the courier only delivers, so
+        # it must not create work buckets. In single-process "all" mode the one
+        # worker sets it up.
+        if self.role in ("office", "all"):
+            planner.ensure_system_campaign(self.db_path)
+
         logger.info(
-            "👷 %s started (%s) on %s",
+            "👷 %s [%s] started (%s) on %s",
             self.name,
+            self.role,
             scope,
             self.db_path or get_db_path(),
         )
@@ -102,7 +121,9 @@ class Worker:
             jobs.reclaim_expired_leases(self.db_path)
             await self._maybe_tick()
 
-            leased = jobs.lease(self.name, limit=1, db_path=self.db_path)
+            leased = jobs.lease(
+                self.name, types=self._lease_types, limit=1, db_path=self.db_path
+            )
             if not leased:
                 await self._maybe_tick(idle=True)
                 if once:
@@ -115,6 +136,10 @@ class Worker:
                 return
 
     async def _maybe_tick(self, idle: bool = False) -> None:
+        # Planning is office work. A courier that also ticked would just do the
+        # same idempotent enqueue twice; keeping it to one role is tidier.
+        if self.role == "courier":
+            return
         interval = IDLE_PLANNER_TICK_SECONDS if idle else PLANNER_TICK_SECONDS
         if time.time() - self._last_tick < interval:
             return
@@ -144,8 +169,8 @@ class Worker:
             status = jobs.fail(job.id, str(exc), self.db_path)
             logger.error("✂️  %s #%s rejected by Airbnb (%s): %s", job.type, job.id, status.value, exc)
         except DeliveryUnconfirmed as exc:
+            # Do not retry this job, and do not pause every other send.
             jobs.cancel(job.id, str(exc), self.db_path)
-            freeze_sending("Message submission needs verification", self.db_path)
             logger.error("[verification required] Job #%s stopped; no automatic resend: %s", job.id, exc)
         except SessionExpired as exc:
             # Every browser job will fail the same way until a human signs in,
@@ -153,6 +178,12 @@ class Worker:
             jobs.cancel(job.id, str(exc), self.db_path)
             freeze_sending(f"Airbnb session expired: {exc}", self.db_path)
             logger.error("🔑 %s — sending frozen until you log in again", exc)
+            try:
+                from app.notify import notify_session_dead
+
+                notify_session_dead(str(exc))
+            except Exception:  # noqa: BLE001 — a ping must not mask the real error
+                logger.debug("Session notification skipped", exc_info=True)
         except SendingFrozen as exc:
             # Retrying would just hit the switch again; a human must release it.
             jobs.cancel(job.id, str(exc), self.db_path)
@@ -164,6 +195,44 @@ class Worker:
             logger.error("❌ %s #%s failed (%s): %s", job.type, job.id, status.value, exc)
 
     # --- Handlers ----------------------------------------------------------
+
+    def _propose_territories(self, job: Job) -> dict:
+        from app.agent.proposer import propose_territories
+
+        return propose_territories(job_id=job.id, db_path=self.db_path)
+
+    def _pull_portal_context(self, job: Job) -> dict:
+        """Best-effort Booking.com corroboration for an enriched listing."""
+        from app import portals
+        from app.database import get_listing
+        from app.portals.booking import BookingConnector, PropertyQuery
+        from app.portals.matcher import MATCH_THRESHOLD, match_confidence
+
+        listing_id = job.payload.get("listing_id")
+        listing = _find_listing(listing_id, self.db_path) or get_listing(
+            listing_id, self.db_path
+        )
+        if listing is None:
+            return {"status": "no_listing"}
+
+        connector = BookingConnector(fetcher=self._portal_fetcher)
+        candidate = connector.fetch_context(PropertyQuery.from_listing(listing))
+        if not candidate:
+            return {"status": "no_context"}
+
+        confidence = match_confidence(listing, candidate)
+        if confidence < MATCH_THRESHOLD:
+            return {"status": "low_confidence", "confidence": confidence}
+
+        portals.save_context(
+            listing_id,
+            connector.portal,
+            candidate,
+            external_url=candidate.get("url", ""),
+            match_confidence=confidence,
+            db_path=self.db_path,
+        )
+        return {"status": "saved", "confidence": confidence, "listing_id": listing_id}
 
     def _research_territory(self, job: Job) -> dict:
         territory_id = int(job.payload["territory_id"])
@@ -232,6 +301,18 @@ class Worker:
                 db_path=self.db_path,
             )
         territory_repo.record_discovery(territory_id, len(listings), self.db_path)
+
+        if not listings:
+            # A place that surfaced no listings is not worth the office's time.
+            # Retiring it makes room for the Proposer to replace it — the
+            # self-healing "change the plan and keep hunting" behaviour.
+            from app.models import TerritoryStatus
+
+            territory_repo.set_status(
+                territory_id, TerritoryStatus.EXHAUSTED, self.db_path
+            )
+            logger.info("🪫 %s yielded no listings — retired", territory.name)
+
         return {"territory": territory.name, "leads": len(listings)}
 
     async def _enrich_lead(self, job: Job) -> dict:
@@ -281,10 +362,22 @@ class Worker:
         )
         return {"lead_id": lead_id, "score": score}
 
-    async def _send_outreach(self, job: Job) -> dict:
-        from app.agent.scribe import send_outreach_for_lead
+    def _draft_outreach(self, job: Job) -> dict:
+        from app.agent.scribe import prepare_outreach
 
-        return await send_outreach_for_lead(
+        prepared = prepare_outreach(
+            int(job.payload["lead_id"]),
+            job_id=job.id,
+            db_path=self.db_path,
+            for_draft=True,
+        )
+        # Keep the job result small and free of the Listing object.
+        return {k: v for k, v in prepared.items() if k not in ("listing", "message")}
+
+    async def _send_outreach(self, job: Job) -> dict:
+        from app.agent.scribe import deliver_outreach_for_lead
+
+        return await deliver_outreach_for_lead(
             int(job.payload["lead_id"]),
             headless=self.headless,
             job_id=job.id,
@@ -399,13 +492,17 @@ def main(
     headless: bool = True,
     db_path: Optional[str] = None,
     once: bool = False,
+    role: str = "all",
 ) -> None:
     """Run a worker until interrupted."""
     from app.logging_config import setup_logging
 
     setup_logging()
     init_db(db_path)
-    worker = Worker(campaign_id=campaign_id, headless=headless, db_path=db_path)
+    worker = Worker(
+        campaign_id=campaign_id, headless=headless, db_path=db_path, role=role,
+        name=f"{role}-1" if role != "all" else "worker-1",
+    )
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:

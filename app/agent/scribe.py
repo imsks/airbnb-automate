@@ -16,15 +16,24 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app import deals as deal_repo
+from app import jobs as job_queue
 from app import leads as lead_repo
 from app import territories as territory_repo
 from app.agent.llm import get_llm
 from app.agent.prompts_v2 import SCRIBE_PROMPT_VERSION, build_scribe_prompt
 from app.agent.runs import tracked_invoke
 from app.browser_session import airbnb_page
+from app.jobs import JobType
 from app.messaging_errors import DeliveryUnconfirmed, MessageRejected, SessionExpired
 from app.models import DealState, Lead, Listing, MessageKind, MessageStatus
-from app.policy import GuardrailPolicy, freeze_sending, load_policy, single_message_authorized
+from app.outreach import AirbnbHostQuotaUIError
+from app.policy import (
+    GuardrailPolicy,
+    freeze_sending,
+    load_policy,
+    note_host_messaging_cap,
+    single_message_authorized,
+)
 from app.send_budget import Channel, reserved_send
 from app.warden import review as warden_review
 
@@ -83,8 +92,14 @@ def prepare_outreach(
     db_path: Optional[str] = None,
     preview: bool = False,
     authorization: Optional[str] = None,
+    for_draft: bool = False,
 ) -> dict:
-    """Write, review and stage an opening message without sending it."""
+    """Write, review and stage an opening message without sending it.
+
+    ``for_draft`` is the office path: it writes the draft for the courier to
+    deliver later, so the kill switch — a send-time concern — is not consulted
+    and a frozen system still produces drafts.
+    """
     from app.worker import _find_listing
 
     lead = lead_repo.get_lead(lead_id, db_path)
@@ -135,7 +150,7 @@ def prepare_outreach(
         text = deal_repo.get_message(message_id, db_path).body
 
     single_allowed = single_message_authorized(message_id, authorization, db_path)
-    check_kill = not (preview or single_allowed)
+    check_kill = not (preview or single_allowed or for_draft)
     # A draft Airbnb would refuse is a wording problem, not a judgement call, so
     # rewrite it a bounded number of times before spending a human's attention.
     # Never rewrite under a single-send token: the token is bound to one message id.
@@ -166,12 +181,33 @@ def prepare_outreach(
 
     if not verdict.allowed:
         deal_repo.mark_message_blocked(message_id, verdict.reason, db_path)
-        if not verdict.is_operational_only:
-            deal_repo.escalate(deal_id, verdict.reason, db_path=db_path)
+        if verdict.is_operational_only:
+            # A frozen kill switch says nothing about the draft: keep it and
+            # let a resume deliver it. Never a human's problem.
+            status = "blocked"
+        elif verdict.revisable_only:
+            # Mechanical wording we could not fix in the allowed rewrites. That
+            # is not a judgement call, so drop this draft and move to the next
+            # lead rather than parking the deal for a human.
+            logger.info(
+                "[draft #%s] Dropped after %d rewrite(s); the office moves on. %s",
+                message_id, _MAX_REVISIONS, verdict.reason,
+            )
+            status = "dropped"
+        else:
+            # A pre-send block: no message ever reached a host, so this is not a
+            # human's problem. Park the draft (it stays visible on the Leads
+            # page) and let the office move on — only live threads land in
+            # "needs a human".
+            logger.info(
+                "[draft #%s] Blocked pre-send (%s); parked in leads, not escalated.",
+                message_id, verdict.reason,
+            )
+            status = "dropped"
         return {
             "deal_id": deal_id,
             "message_id": message_id,
-            "status": "blocked",
+            "status": status,
             "reason": verdict.reason,
             "message": text,
         }
@@ -186,6 +222,87 @@ def prepare_outreach(
     }
 
 
+def _paused_only_by_kill_switch(stored, db_path: Optional[str]) -> bool:
+    """True when the only thing stopping this draft is a switch that is now off."""
+    from app.policy import sending_enabled
+
+    reason = stored.blocked_reason or ""
+    return (
+        sending_enabled(db_path)
+        and reason.startswith("[kill_switch]")
+        and ";" not in reason
+    )
+
+
+async def deliver_outreach_for_lead(
+    lead_id: int,
+    *,
+    headless: bool = True,
+    job_id: Optional[int] = None,
+    db_path: Optional[str] = None,
+    authorization: Optional[str] = None,
+) -> dict:
+    """Deliver the draft the office already wrote. Never composes.
+
+    This is the courier half of outreach: it requires a staged draft to exist
+    (the office's ``draft_outreach`` job produces it) and refuses to invent one.
+    """
+    from app.worker import _find_listing
+
+    lead = lead_repo.get_lead(lead_id, db_path)
+    if lead is None:
+        return {"status": "no_lead"}
+
+    listing = _find_listing(lead.listing_id, db_path) or Listing(id=lead.listing_id)
+    key = f"outreach:{lead.campaign_id}:{lead.listing_id}"
+    stored = deal_repo.get_message_by_key(key, db_path)
+    if stored is None:
+        # The office has not drafted this lead yet — nothing to deliver.
+        return {"status": "no_draft"}
+
+    deal_id = stored.deal_id
+    deal = deal_repo.get_deal(deal_id, db_path)
+    if deal is None:
+        return {"status": "no_deal"}
+    if deal.state not in (DealState.DISCOVERED, DealState.QUALIFIED):
+        return {"deal_id": deal_id, "message_id": stored.id, "status": "already_contacted"}
+    if stored.status in (MessageStatus.SENT, MessageStatus.SENDING):
+        return {"deal_id": deal_id, "message_id": stored.id, "status": stored.status.value}
+    if stored.status is MessageStatus.BLOCKED and not _paused_only_by_kill_switch(
+        stored, db_path
+    ):
+        return {"deal_id": deal_id, "message_id": stored.id, "status": "blocked"}
+
+    # Re-check the guardrails against live policy right before delivery. A draft
+    # written hours ago must still pass, and the kill switch lives here.
+    verdict = warden_review(
+        stored.body, deal=deal, db_path=db_path,
+        check_kill_switch=not single_message_authorized(stored.id, authorization, db_path),
+    )
+    if not verdict.allowed:
+        # The delivery gate fired before anything was sent, so the deal is not
+        # escalated to a human — the draft is simply parked and the lead stays
+        # on the Leads page for the office to retry.
+        deal_repo.mark_message_blocked(stored.id, verdict.reason, db_path)
+        return {
+            "deal_id": deal_id,
+            "message_id": stored.id,
+            "status": "blocked",
+            "reason": verdict.reason,
+        }
+
+    return await _submit_outreach(
+        deal_id,
+        stored.id,
+        listing,
+        stored.body,
+        lead_id=lead_id,
+        headless=headless,
+        db_path=db_path,
+        authorization=authorization,
+    )
+
+
 async def send_outreach_for_lead(
     lead_id: int,
     *,
@@ -194,31 +311,60 @@ async def send_outreach_for_lead(
     db_path: Optional[str] = None,
     authorization: Optional[str] = None,
 ) -> dict:
-    """Compose, review, send and link a first-touch message for one lead."""
-    from app.outreach import _send_message_to_host
+    """Compose, review, send and link a first-touch message for one lead.
 
+    This composes *and* delivers in one call. The autonomous pipeline splits
+    those halves (``draft_outreach`` then ``deliver_outreach_for_lead``); this
+    is kept for the ``send-one`` control and for callers that want both steps.
+    """
     prepared = await asyncio.to_thread(
         prepare_outreach, lead_id, job_id=job_id, db_path=db_path, authorization=authorization
     )
     if prepared["status"] != "ready":
         return prepared
 
-    deal_id = prepared["deal_id"]
-    message_id = prepared["message_id"]
-    listing = prepared["listing"]
+    return await _submit_outreach(
+        prepared["deal_id"],
+        prepared["message_id"],
+        prepared["listing"],
+        prepared["message"],
+        lead_id=lead_id,
+        headless=headless,
+        db_path=db_path,
+        authorization=authorization,
+    )
+
+
+async def _submit_outreach(
+    deal_id: int,
+    message_id: int,
+    listing: Listing,
+    text: str,
+    *,
+    lead_id: int,
+    headless: bool = True,
+    db_path: Optional[str] = None,
+    authorization: Optional[str] = None,
+) -> dict:
+    """Deliver one staged outreach message and record the outcome.
+
+    Shared by the one-shot ``send_outreach_for_lead`` and the courier's
+    ``deliver_outreach_for_lead`` so there is exactly one delivery path.
+    """
+    from app.outreach import _send_message_to_host
 
     async def before_send() -> None:
         deal = deal_repo.get_deal(deal_id, db_path)
         if deal.state not in (DealState.DISCOVERED, DealState.QUALIFIED):
             raise ValueError("Deal changed while the composer was opening; nothing was submitted.")
         verdict = warden_review(
-            prepared["message"], deal=deal, db_path=db_path,
+            text, deal=deal, db_path=db_path,
             check_kill_switch=not single_message_authorized(message_id, authorization, db_path),
         )
         if not verdict.allowed:
             raise PermissionError(verdict.reason)
         deal_repo.begin_message_delivery(
-            message_id, prepared["message"], db_path, authorization=authorization
+            message_id, text, db_path, authorization=authorization
         )
 
     try:
@@ -227,7 +373,7 @@ async def send_outreach_for_lead(
                 Channel.OUTREACH, db_path, message_id=message_id, authorization=authorization
             ):
                 thread_id, thread_url = await _send_message_to_host(
-                    page, listing, prepared["message"], before_send=before_send
+                    page, listing, text, before_send=before_send
                 )
                 deal_repo.mark_message_sent(message_id, db_path)
         deal_repo.advance_to(
@@ -254,10 +400,21 @@ async def send_outreach_for_lead(
         deal_repo.mark_message_rejected(message_id, str(exc), db_path)
         logger.error("[rejected #%s] %s", message_id, exc)
         raise
-    except DeliveryUnconfirmed as exc:
+    except AirbnbHostQuotaUIError as exc:
+        # Airbnb refused the send and will refuse the next ones too. Hold the
+        # queue instead of clicking Send on every remaining host.
+        until = note_host_messaging_cap(db_path)
+        held = sum(
+            job_queue.defer_pending(kind, until, db_path)
+            for kind in (JobType.SEND_OUTREACH, JobType.NEGOTIATE_DEAL)
+        )
         deal_repo.mark_message_unconfirmed(message_id, str(exc), db_path)
-        deal_repo.escalate(deal_id, str(exc), db_path=db_path)
-        freeze_sending("Delivery requires verification; automatic retry stopped.", db_path)
+        logger.error("[airbnb cap #%s] %s — %d send(s) held", message_id, exc, held)
+        raise DeliveryUnconfirmed(str(exc)) from exc
+    except DeliveryUnconfirmed as exc:
+        # This draft is not retried — the click may already have sent it — but
+        # the rest of the queue keeps going. A pause is a manual action.
+        deal_repo.mark_message_unconfirmed(message_id, str(exc), db_path)
         logger.error("[unconfirmed #%s] %s", message_id, exc)
         raise
     except SessionExpired:
@@ -268,7 +425,6 @@ async def send_outreach_for_lead(
         current = deal_repo.get_message(message_id, db_path)
         if current.status is MessageStatus.SENDING:
             deal_repo.mark_message_unconfirmed(message_id, str(exc), db_path)
-            freeze_sending("Submission outcome is uncertain; inspect the thread.", db_path)
             raise DeliveryUnconfirmed("Submission may have happened; no automatic retry.") from exc
         deal_repo.mark_message_failed(message_id, str(exc), db_path)
         logger.error("[message #%s] %s", message_id, exc)

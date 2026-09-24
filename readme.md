@@ -8,11 +8,19 @@ You supply the card. Everything up to that point runs on its own.
 
 ## How it works
 
-A **Planner** turns a campaign goal ("six months across North India, Nov–Apr") into jobs on a durable queue. A fixed roster of specialists drains it. Roles never change — the *work* is what multiplies.
+A standing **deal office** runs on its own. A **Proposer** keeps inventing places to stay — all over India and abroad — the moment the shortlist runs low; a **Planner** turns those into jobs on a durable queue. A fixed roster of specialists drains it. There is no form to fill in and no dates to pick: you configure *who you are* and the guardrails, and the office does the rest.
+
+The queue is split across two lanes so the one browser is never a bottleneck:
+
+- **Office** — proposes, researches, scores and *drafts* outreach. No browser, no Airbnb session, so it can run anywhere.
+- **Courier** — owns the single Airbnb browser session and does everything that touches it: discover, enrich, send, sync the inbox, negotiate.
+
+Roles never change — the *work* is what multiplies.
 
 | Agent | Does | Lives in |
 |---|---|---|
-| **Planner** | Breaks the goal into jobs, keeps the pipeline fed | [app/agent/planner.py](app/agent/planner.py) |
+| **Proposer** | Invents new destinations when the live shortlist runs low, skipping places already tried or visited | [app/agent/proposer.py](app/agent/proposer.py) |
+| **Planner** | Breaks the work into jobs, keeps the pipeline fed, drafts before it sends | [app/agent/planner.py](app/agent/planner.py) |
 | **Scout** | Researches a place month by month — seasonality, connectivity, cost, events | [app/agent/scout.py](app/agent/scout.py) |
 | **Router** | Orders places into a route that makes geographic sense | [app/agent/router.py](app/agent/router.py) |
 | **Prospector** | Scrapes listings, then the detail page for real context | [app/listing_detail.py](app/listing_detail.py) |
@@ -22,22 +30,25 @@ A **Planner** turns a campaign goal ("six months across North India, Nov–Apr")
 | **Warden** | Blocks any message that breaks your rules — deterministic, not a prompt | [app/warden.py](app/warden.py) |
 | **Chronicler** | Builds the brief and the dashboard | [app/agent/chronicler.py](app/agent/chronicler.py) |
 
-The agents run **fully autonomously up to Airbnb's payment wall**. They negotiate, agree terms, and stop — because only you can pay.
+The agents run **fully autonomously up to Airbnb's payment wall**. They propose, research, draft, negotiate, agree terms, and stop — because only you can pay. When a step fails the office replans and keeps hunting; a blocked draft is rewritten at most twice, then dropped, without bothering you.
 
 ### The pipeline
 
+Drafting is separated from sending: the **Office** writes and the **Courier** delivers, so a dead Airbnb session never stops the office from researching and drafting ahead.
+
 ```
-campaign goal
-  → research a place        (Scout)
-  → order the route         (Router)
-  → discover listings       (Prospector)
-  → enrich from detail page (Prospector)
-  → score the lead          (Analyst)
-  → write + send outreach   (Scribe → Warden → send budget)
-  → host replies            (inbox sync)
-  → negotiate               (Closer → Warden → send budget)
-  → extract agreed terms    (Closer)
-  → READY TO BOOK           ← you take over here
+standing office
+  → propose places           (Proposer · Office)
+  → research each place       (Scout · Office)
+  → discover listings         (Courier)
+  → enrich from detail page   (Courier)
+  → score the lead            (Analyst · Office)
+  → draft outreach            (Scribe → Warden · Office)   ← saved, not sent
+  → deliver outreach          (Courier → send budget)
+  → host replies              (inbox sync · Courier)
+  → negotiate                 (Closer → Warden → send budget · Courier)
+  → extract agreed terms      (Closer)
+  → READY TO BOOK             ← you take over here
 ```
 
 ### Every host relationship is a Deal
@@ -96,8 +107,7 @@ a Chrome profile at `data/airbnb_browser_profile/` (with a cookie backup at
 `data/browser_state.json`). The worker reuses it for every scrape and send.
 
 ```bash
-make login      # opens a browser — sign in, then close it
-make session    # check the session is still live
+make login
 ```
 
 If the login never "sticks" or the browser opens logged out:
@@ -111,27 +121,38 @@ If the login never "sticks" or the browser opens logged out:
 ### 4. Run it
 
 ```bash
-make start
+make up
 ```
 
-That's the whole thing. It runs the API and the worker together and opens the
-dashboard at <http://127.0.0.1:8000>, where you create the campaign and watch
-progress. Ctrl+C stops both.
+That builds the Docker image and runs the office, the courier, and the
+dashboard at <http://127.0.0.1:8000>. **There is nothing to set up on the
+page** — the office starts proposing places and working them on its own.
 
-The worker is still the only thing that touches the browser — the API just
-writes rows to the `jobs` table. They share an event loop locally; run them as
-separate processes with `make api` and `make worker` when the worker needs to
-live somewhere else.
+The image installs Chromium only. The first `make up` still downloads that
+browser; later runs reuse it.
 
-### 5. Create a campaign in the UI
+```bash
+make down
+```
 
-Fill in the name, your starting city, the months you're free, and the
-destinations to consider (pre-filled from [locations.md](locations.md)). Hit
-**Create campaign & start work** and the Planner takes over.
+Stops the containers.
 
-Everything after that is on the page: live agent activity, the pipeline funnel,
-what's ready to book, what needs you, the job queue, and LLM spend. It refreshes
-every 10 seconds.
+### 5. Watch it on your phone
+
+The dashboard is the stats: the status strip, closes per 100 messages, the
+pipeline, the job queue, prompt performance and agent cost. Drafts and delivery
+are on **Messages**. Deals that need you are on **Needs a human** and **Ready
+to book**. What each lane is doing is on **Loops**, and the log tail is on
+**Logs**. Every page refreshes every 10 seconds. You never create a campaign;
+the office invents its own work.
+
+### 6. Leave it running
+
+`make up` is the office, the courier, and the API as separate containers
+sharing `./data` (the database and the Airbnb profile from `make login`).
+They keep running until `make down`. Point your phone at this machine's
+address on your network, port 8000, and set the Telegram variables (below) so
+it can ping you for the moments that need a human.
 
 ---
 
@@ -230,13 +251,17 @@ Tune with `OUTREACH_MAX_SENDS_PER_WINDOW`, `OUTREACH_RATE_WINDOW_SECONDS`, and `
 
 ```
 airbnb-automate/
-├── manage.py               # Entry point — `start` runs everything; login / brief / freeze
-├── Makefile                # make start / login / brief / status / freeze / test
-├── locations.md            # One destination per line
+├── manage.py               # Entry point — `start`; `worker --role office|courier`; login / brief
+├── Makefile                # make login / up / down / test
+├── Dockerfile              # One image; the compose file runs it as office / courier / api
+├── docker-compose.yml      # Always-on: office + courier + api on one data volume
+├── locations.md            # Optional seed for the manual `campaign` CLI (office ignores it)
 │
 ├── app/
-│   ├── worker.py           # Leases jobs, dispatches them, owns the browser
+│   ├── worker.py           # Leases jobs by role, dispatches them; the Courier owns the browser
 │   ├── jobs.py             # Durable queue: enqueue / lease / retry / idempotency
+│   ├── activity.py         # Office & Courier loop feeds, read from the durable job record
+│   ├── notify.py           # Telegram pings for the three human moments
 │   ├── warden.py           # Deterministic guardrail validator
 │   ├── policy.py           # Guardrail config + kill switch (DB-backed, live)
 │   ├── send_budget.py      # One shared send window for every channel
@@ -261,7 +286,8 @@ airbnb-automate/
 │   │   └── sql/            # 0001 baseline · 0002 agent office · 0003 backfill · 0004 drop legacy
 │   │
 │   ├── agent/
-│   │   ├── planner.py      # Decomposes goals into jobs
+│   │   ├── proposer.py     # Invents new destinations when the shortlist runs low
+│   │   ├── planner.py      # Decomposes goals into jobs, drafts before it sends
 │   │   ├── scout.py        # Destination research
 │   │   ├── router.py       # Route + month assignment
 │   │   ├── analyst.py      # Lead scoring
@@ -286,8 +312,9 @@ airbnb-automate/
 ## 📍 `locations.md`
 
 One destination per line in the project root; lines starting with `#` are comments.
-The campaign form in the dashboard pre-fills from this file, and
-`manage.py campaign` reads it when you don't pass `--places` / `--places-file`.
+The standing office no longer needs this file — the **Proposer** invents places on
+its own. It remains an optional seed for the manual `manage.py campaign` command,
+which reads it when you don't pass `--places` / `--places-file`.
 
 These are only *candidates* — the Scout researches each one and the Router decides which actually make the itinerary, and in which month.
 
@@ -348,6 +375,15 @@ These seed the `policy` table on first run. After that the dashboard is the sour
 
 Every LLM call is logged to `agent_runs` with tokens, latency and cost, attributed to an agent, a prompt version and a deal. The dashboard shows spend per agent and **reply rate per prompt version** — the highest-leverage thing to tune once you have volume.
 
+### Notifications
+
+| Variable | Description | Default |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather; enables the three human-moment pings | — |
+| `TELEGRAM_CHAT_ID` | Chat / user id to send to | — |
+
+Leave both unset and notifications are a silent no-op — nothing else breaks.
+
 ---
 
 ## 🧪 Testing
@@ -368,10 +404,16 @@ Worth knowing what's covered, because this system messages real people as you:
 
 ---
 
+## 📄 Specs
+
+- [docs/prd-portal-context-and-vector-memory.md](docs/prd-portal-context-and-vector-memory.md) — planned **Booking.com-style context portals** (read-only corroboration, never discovery or messaging) and a **vector memory** so drafts recall the openings and terms that have actually closed deals. Ships behind a fallback backend so it doesn't block on the Postgres migration.
+
+---
+
 ## ⚠️ Notes
 
 - **Airbnb ToS** — automated scraping and messaging may violate Airbnb's Terms of Service. You are messaging real hosts as yourself; keep the volume honest and the claims true. The credential fact sheet exists so an agent cannot overstate your reach on your behalf.
 - **Login required** — the worker cannot log in for you. Run `make login` once; the session lives in `data/airbnb_browser_profile/`. If Google/Apple OAuth fails in bundled Chromium, set `PLAYWRIGHT_CHANNEL=chrome`.
-- **No push notifications** — the dashboard is the only place a problem surfaces, so the brief leads with the two queues that need you and raises an anomaly banner when the system has gone unexpectedly quiet.
-- **Cloud** — running this on a server needs a persistent VM, a headful browser under Xvfb, a residential India exit IP, an encrypted profile volume and a one-time remote login handoff. That's a separate project; the code is written to be liftable (all paths from config, browser confined to the worker) but the deployment is not built.
+- **Telegram for the moments that need you** — set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` and the office pings you on exactly three things: a deal is **ready to book**, a host makes a demand the rules can't meet (**needs a human**), or the **Airbnb session has died** and the Courier needs you to sign back in. Everything else stays on its own page. The dashboard is the stats and raises an anomaly banner when the system has gone unexpectedly quiet.
+- **Always-on / cloud** — `make up` runs the office, courier and API as separate containers on `./data`. A public cloud VM additionally needs a headful browser under Xvfb, a residential India exit IP, an encrypted profile directory and a one-time remote login handoff (the Courier still can't log in for you). The code is written to be liftable — all paths come from config and the browser is confined to the Courier.
 

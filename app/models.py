@@ -169,6 +169,9 @@ class TerritoryStatus(str, Enum):
     ACTIVE = "active"
     EXHAUSTED = "exhausted"
     BLOCKED = "blocked"
+    #: Somewhere you have already been. The proposer skips these so the office
+    #: keeps finding you places that are new to you.
+    VISITED = "visited"
 
 
 class CampaignStatus(str, Enum):

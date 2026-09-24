@@ -202,6 +202,40 @@ def top_unsent_leads(
         conn.close()
 
 
+def list_leads_with_listing(
+    campaign_id: int = 0, limit: int = 300, db_path: Optional[str] = None
+) -> list[dict]:
+    """Every lead joined to its listing and deal, for the Leads dashboard page.
+
+    Returns plain dicts (not ``Lead`` models) because the page also wants listing
+    columns and the deal state, and it renders read-only. Ordered best-first:
+    scored leads by score desc, then the freshest unscored ones.
+    """
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT l.id AS lead_id, l.listing_id, l.campaign_id,
+                      l.collab_fit_score, l.detail_scraped_at,
+                      li.title, li.location, li.price_per_night, li.currency,
+                      li.rating, li.review_count, li.host_name, li.url,
+                      d.id AS deal_id, d.state AS deal_state,
+                      (SELECT status FROM messages m
+                        WHERE m.deal_id = d.id AND m.direction = 'outbound'
+                        ORDER BY m.id DESC LIMIT 1) AS last_message_status
+                 FROM leads l
+                 LEFT JOIN listings li ON li.id = l.listing_id
+                 LEFT JOIN deals d
+                        ON d.listing_id = l.listing_id AND d.campaign_id = l.campaign_id
+                WHERE (? = 0 OR l.campaign_id = ?)
+                ORDER BY (l.collab_fit_score IS NULL), l.collab_fit_score DESC, l.id DESC
+                LIMIT ?""",
+            (campaign_id, campaign_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def leads_needing_enrichment(
     campaign_id: int = 0, limit: int = 25, db_path: Optional[str] = None
 ) -> list[Lead]:

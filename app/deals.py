@@ -196,6 +196,69 @@ def get_deals_by_state(
         conn.close()
 
 
+def deals_ready_to_send(
+    campaign_id: Optional[int] = None,
+    limit: int = 10,
+    db_path: Optional[str] = None,
+) -> list[Deal]:
+    """Pre-contact deals that already have an opening draft staged for delivery.
+
+    This is the courier's send queue: the office writes the draft (a pending
+    outreach message), and only then is there anything worth spending a send on.
+    """
+    conn = get_connection(db_path)
+    try:
+        sql = (
+            """SELECT DISTINCT d.* FROM deals d
+                JOIN messages m ON m.deal_id = d.id
+                WHERE d.state IN (?, ?)
+                  AND m.kind = ?
+                  AND m.direction = ?
+                  AND m.status = ?"""
+        )
+        params: list[Any] = [
+            DealState.DISCOVERED.value,
+            DealState.QUALIFIED.value,
+            MessageKind.OUTREACH.value,
+            MessageDirection.OUTBOUND.value,
+            MessageStatus.PENDING.value,
+        ]
+        if campaign_id is not None:
+            sql += " AND d.campaign_id = ?"
+            params.append(campaign_id)
+        sql += " ORDER BY d.updated_at ASC LIMIT ?"
+        params.append(limit)
+        return [_row_to_deal(r) for r in conn.execute(sql, params)]
+    finally:
+        conn.close()
+
+
+def release_kill_switch_drafts(db_path: Optional[str] = None) -> int:
+    """Put kill-switch holds back in the send queue once sending is on.
+
+    The switch is a pause. It does not reject the wording, so a draft parked
+    only for that reason is delivered as soon as sending is allowed again.
+    """
+    from app.policy import sending_enabled
+
+    if not sending_enabled(db_path):
+        return 0
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            """UPDATE messages
+                  SET status = ?, blocked_reason = ''
+                WHERE status = ?
+                  AND blocked_reason LIKE '[kill_switch]%'
+                  AND instr(blocked_reason, ';') = 0""",
+            (MessageStatus.PENDING.value, MessageStatus.BLOCKED.value),
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def transition(
     deal_id: int,
     to_state: DealState,
@@ -250,9 +313,24 @@ def transition(
         logger.info(
             "Deal %s: %s -> %s (%s)", deal_id, from_state.value, to_state.value, reason
         )
-        return _row_to_deal(updated)
+        deal = _row_to_deal(updated)
     finally:
         conn.close()
+
+    # Ping the two states only a human can move past. Done after the connection
+    # is closed so a slow notification never holds a write lock, and guarded so
+    # a notifier failure can never break a state transition.
+    if to_state != from_state and to_state in (
+        DealState.READY_TO_BOOK,
+        DealState.NEEDS_HUMAN,
+    ):
+        try:
+            from app.notify import notify_deal_state
+
+            notify_deal_state(to_state.value, deal)
+        except Exception:  # noqa: BLE001
+            logger.debug("Deal %s notification skipped", deal_id, exc_info=True)
+    return deal
 
 
 def advance_to(
@@ -462,6 +540,75 @@ def funnel_counts(
 
 
 # --- Messages --------------------------------------------------------------
+
+
+def delete(deal_id: int, db_path: Optional[str] = None) -> bool:
+    """Hard-delete a deal and everything hanging off it. Returns True if it went.
+
+    Backs the Needs-a-human "Delete" action: clear a dead thread entirely rather
+    than leaving it on the board.
+    """
+    conn = get_connection(db_path)
+    try:
+        conn.execute("DELETE FROM messages WHERE deal_id = ?", (deal_id,))
+        conn.execute("DELETE FROM deal_events WHERE deal_id = ?", (deal_id,))
+        cursor = conn.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def abandon(
+    deal_id: int, reason: str = "", actor: str = "human", db_path: Optional[str] = None
+) -> Optional[Deal]:
+    """Terminally close a deal a human has decided to drop, from any live state.
+
+    Backs the Needs-a-human "Kill" action. A pre-contact deal can only reach
+    ``DISQUALIFIED`` while a contacted one reaches ``REJECTED``; this picks
+    whichever terminal state is legal so kill never raises. A deal already in a
+    terminal state is left as-is and returned unchanged.
+    """
+    deal = get_deal(deal_id, db_path)
+    if deal is None:
+        return None
+    reachable = allowed_deal_transitions(deal.state)
+    for target in (DealState.REJECTED, DealState.DISQUALIFIED):
+        if target in reachable:
+            return transition(
+                deal_id, target, reason=reason or "stopped by human",
+                actor=actor, db_path=db_path,
+            )
+    return deal  # already terminal (or otherwise unclosable) — nothing to do
+
+
+def reset_for_retry(deal_id: int, db_path: Optional[str] = None) -> bool:
+    """Wipe a deal's messages and put it back to QUALIFIED so the office redrafts.
+
+    Backs the Needs-a-human "Retry" action. Clearing the messages also frees the
+    outreach idempotency key, so the Scribe composes a fresh opening rather than
+    replaying the blocked one.
+    """
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT state FROM deals WHERE id = ?", (deal_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM messages WHERE deal_id = ?", (deal_id,))
+        conn.execute(
+            "UPDATE deals SET state = ?, state_reason = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (DealState.QUALIFIED.value, "retried by human", deal_id),
+        )
+        conn.execute(
+            "INSERT INTO deal_events (deal_id, from_state, to_state, reason, actor) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (deal_id, row["state"], DealState.QUALIFIED.value, "retried by human", "human"),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
 
 def record_message(

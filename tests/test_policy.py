@@ -133,6 +133,14 @@ def test_tracked_invoke_records_failures_before_reraising(db):
     assert row["failures"] == 1
 
 
+def test_host_messaging_cap_holds_new_sends(db):
+    assert policy.host_messaging_delay_seconds() == 0
+    until = policy.note_host_messaging_cap(cooldown_seconds=100)
+    assert policy.host_messaging_delay_seconds() == pytest.approx(100, abs=2)
+    assert policy.host_messaging_paused_until() == pytest.approx(until, abs=1)
+    assert policy.note_host_messaging_cap(cooldown_seconds=10) == pytest.approx(until, abs=1)
+
+
 def test_unknown_model_records_zero_cost_rather_than_guessing(db):
     assert runs.estimate_cost_usd("some-new-model", 1000, 1000) == 0.0
     assert runs.estimate_cost_usd("gpt-4o-mini", 1_000_000, 0) == pytest.approx(0.15)

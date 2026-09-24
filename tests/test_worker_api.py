@@ -17,7 +17,14 @@ from app.agent.closer import NotNegotiable, prepare_reply
 from app.api.main import create_app
 from app.database import get_connection, init_db
 from app.jobs import JobType
-from app.models import Campaign, CampaignStatus, DealState, MessageStatus, TerritoryProfile
+from app.models import (
+    Campaign,
+    CampaignStatus,
+    DealState,
+    MessageKind,
+    MessageStatus,
+    TerritoryProfile,
+)
 from app.worker import Worker, sweep_stale
 
 _REPOS = (
@@ -307,17 +314,42 @@ def test_planner_does_not_requeue_the_same_research(db):
 
 
 def test_planner_respects_send_budget_backpressure(db, monkeypatch):
-    """Queueing sends we cannot deliver hides the real constraint."""
+    """Queueing sends we cannot deliver hides the real constraint.
+
+    A send is only ever queued for a deal whose draft is already staged, so
+    each listing gets a pending outreach message first.
+    """
     for listing_id in ("L1", "L2"):
         lead_id = lead_repo.upsert_lead(listing_id, db_path=db)
-        lead_repo.save_enrichment(lead_id, {"description": "x"}, db_path=db)
-        lead_repo.save_score(lead_id, 0.9, {}, db_path=db)
+        deal_id = deal_repo.upsert_deal(
+            listing_id, campaign_id=0, lead_id=lead_id, db_path=db
+        )
+        deal_repo.advance_to(deal_id, DealState.QUALIFIED, db_path=db)
+        deal_repo.record_message(
+            deal_id,
+            "Hi there!",
+            kind=MessageKind.OUTREACH,
+            idempotency_key=f"outreach:0:{listing_id}",
+            db_path=db,
+        )
 
     monkeypatch.setattr("app.agent.planner.remaining_sends", lambda p=None: 0)
     assert planner.plan_tick(0, db)["queued"]["outreach"] == 0
 
     monkeypatch.setattr("app.agent.planner.remaining_sends", lambda p=None: 5)
     assert planner.plan_tick(0, db)["queued"]["outreach"] > 0
+
+
+def test_planner_drafts_before_it_sends(db):
+    """The office writes a draft first; only then is a send queued."""
+    lead_id = lead_repo.upsert_lead("L1", db_path=db)
+    lead_repo.save_enrichment(lead_id, {"description": "x"}, db_path=db)
+    lead_repo.save_score(lead_id, 0.9, {}, db_path=db)
+
+    # Nothing is staged yet, so no send can be queued — only a draft.
+    result = planner.plan_tick(0, db)
+    assert result["queued"]["draft"] == 1
+    assert result["queued"]["outreach"] == 0
 
 
 def test_planner_queues_negotiation_at_higher_priority_than_outreach(db, monkeypatch):
@@ -482,11 +514,63 @@ def test_dashboard_renders(client):
     assert "Closes / 100 msgs" in response.text
 
 
-def test_dashboard_offers_a_campaign_form_when_there_are_none(client):
-    """With no campaign, the UI must lead with the thing that creates one."""
+def test_dashboard_has_no_campaign_form(client):
+    """The office runs itself — there is nothing for a human to set up."""
+    body = client.get("/loops").text
+    assert "Create campaign &amp; start work" not in body
+    assert "Destinations to consider" not in body
+    assert "Standing office" in body
+
+
+def test_dashboard_is_stats_and_the_rest_has_its_own_pages(client, db):
+    """Counts stay on the dashboard. Lists live on their own pages."""
+    jobs.enqueue(JobType.RESEARCH_TERRITORY, {"name": "Goa"}, db_path=db)
+    home = client.get("/").text
+    assert "At a glance" in home
+    assert "Pipeline" in home
+    assert "Job queue" in home
+    assert "Prompt performance" in home
+    assert "<h2>Messages" not in home
+    assert "<h2>Needs a human" not in home
+    assert "<h2>Logs" not in home
+    assert 'href="/messages"' in home
+
+    assert client.get("/messages").status_code == 200
+    assert "Messages — drafts and delivery" in client.get("/messages").text
+    assert "<h1>Needs a human</h1>" in client.get("/attention").text
+    assert "<h1>Ready to book</h1>" in client.get("/ready").text
+    loops = client.get("/loops").text
+    assert "Office" in loops
+    assert "Courier" in loops
+    assert "Standing office" in loops
+
+
+def test_dashboard_shows_both_loops(client, db):
+    jobs.enqueue(JobType.RESEARCH_TERRITORY, {"name": "Goa"}, db_path=db)
+    body = client.get("/loops").text
+    assert "Loops" in body
+    assert "Office" in body
+    assert "Courier" in body
+
+
+def test_dashboard_status_strip_summarises_the_glanceable_state(client):
+    """The phone-first strip surfaces sending state and the human queues."""
     body = client.get("/").text
-    assert "Create campaign &amp; start work" in body
-    assert "Destinations to consider" in body
+    strip = body.split('class="strip"', 1)[1].split("</div>", 1)[0]
+    assert "sending" in strip
+    assert "ready to book" in strip
+    assert "needs you" in strip
+    # Fresh install is not frozen, so the sending pill reads LIVE.
+    assert "LIVE" in strip
+
+
+def test_loop_activity_endpoints_read_the_durable_record(client, db):
+    research = jobs.enqueue(JobType.RESEARCH_TERRITORY, {"name": "Goa"}, db_path=db)
+    jobs.complete(research, {"territory": "Goa"}, db_path=db)
+
+    office = client.get("/api/activity/office").json()
+    assert any(row["type"] == JobType.RESEARCH_TERRITORY for row in office)
+    assert client.get("/api/activity/courier").status_code == 200
 
 
 def test_dashboard_shows_activity_and_controls(client):
@@ -497,10 +581,10 @@ def test_dashboard_shows_activity_and_controls(client):
     setup_logging()
     logging.getLogger("app.agent.scout").info("Scouting Goa, India")
 
-    body = client.get("/").text
-    assert "Scouting Goa, India" in body
-    assert "Freeze sending" in body
-    assert "Live activity" in body.replace("LIVE ACTIVITY", "Live activity")
+    assert "Freeze sending" in client.get("/").text
+    logs = client.get("/logs").text
+    assert "Scouting Goa, India" in logs
+    assert "<h2>Logs</h2>" in logs
 
 
 def test_activity_endpoint_returns_app_logs_only(client):
@@ -515,26 +599,6 @@ def test_activity_endpoint_returns_app_logs_only(client):
     messages = [r["message"] for r in client.get("/api/activity").json()]
     assert "worker says hello" in messages
     assert "library noise" not in messages
-
-
-def test_creating_a_campaign_from_the_ui_queues_work(client):
-    body = client.post(
-        "/api/campaigns",
-        json={
-            "name": "Winter tour",
-            "window_start": "2026-11",
-            "window_end": "2027-02",
-            "places": ["Goa, India", "Gokarna, Karnataka"],
-        },
-    ).json()
-    assert body["territories"] == 2
-    assert body["queued"] >= 2  # research jobs for each place
-
-
-def test_campaign_without_places_falls_back_to_locations_file(client):
-    """The form is allowed to be left empty; locations.md is the default."""
-    body = client.post("/api/campaigns", json={"name": "Fallback"}).json()
-    assert body["campaign_id"]
 
 
 def test_brief_endpoint(client):
@@ -558,21 +622,6 @@ def test_policy_endpoint_updates_guardrails(client):
     assert client.get("/api/policy").json()["max_price_per_night"] == 2500
 
 
-def test_campaign_creation_seeds_territories(client):
-    response = client.post(
-        "/api/campaigns",
-        json={
-            "name": "Winter tour",
-            "window_start": "2026-11",
-            "window_end": "2027-02",
-            "places": ["Goa, India", "Gokarna, Karnataka"],
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["territories"] == 2
-    assert len(client.get("/api/campaigns").json()) == 1
-
-
 def test_missing_deal_returns_404(client):
     assert client.get("/api/deals/9999").status_code == 404
 
@@ -586,6 +635,155 @@ def test_deal_detail_includes_messages_and_events(client, db):
     assert len(body["events"]) == 1
 
 
-def test_queueing_an_inbox_sync_creates_a_job(client, db):
-    assert client.post("/api/jobs/sync-inbox").json()["job_id"]
+def test_job_queue_endpoint_reports_depth(client, db):
+    from app import jobs
+    from app.jobs import JobType, Priority
+
+    jobs.enqueue(JobType.SYNC_INBOX, priority=Priority.INBOX_SYNC, db_path=db)
     assert client.get("/api/jobs").json()["pending"] == 1
+
+
+# --- Needs-a-human actions -------------------------------------------------
+
+
+def _needs_human_deal(db, listing_id="L1"):
+    lead_id = lead_repo.upsert_lead(listing_id, db_path=db)
+    deal_id = deal_repo.upsert_deal(
+        listing_id, lead_id=lead_id, host_name="Asha", db_path=db
+    )
+    deal_repo.transition(deal_id, DealState.QUALIFIED, db_path=db)
+    deal_repo.transition(deal_id, DealState.NEEDS_HUMAN, reason="host demand", db_path=db)
+    return deal_id
+
+
+def test_retry_deal_resets_to_qualified_and_enqueues_a_draft(client, db):
+    deal_id = _needs_human_deal(db)
+    body = client.post(f"/api/deals/{deal_id}/retry").json()
+    assert body["status"] == "retrying"
+    assert deal_repo.get_deal(deal_id, db).state is DealState.QUALIFIED
+    assert jobs.queue_depth(db)["pending"] == 1
+
+
+def test_retry_missing_deal_is_404(client):
+    assert client.post("/api/deals/9999/retry").status_code == 404
+
+
+def test_kill_deal_rejects_it_and_cancels_pending_jobs(client, db):
+    deal_id = _needs_human_deal(db)
+    jobs.enqueue(
+        JobType.DRAFT_OUTREACH, {"listing_id": "L1"}, deal_id=deal_id, db_path=db
+    )
+    body = client.post(f"/api/deals/{deal_id}/kill").json()
+    assert body["status"] == "killed"
+    assert body["jobs_cancelled"] == 1
+    assert deal_repo.get_deal(deal_id, db).state is DealState.REJECTED
+    assert jobs.queue_depth(db).get("pending", 0) == 0
+
+
+def test_kill_works_from_a_pre_contact_state(client, db):
+    """A human can stop a deal that never got contacted (QUALIFIED -> terminal)."""
+    lead_id = lead_repo.upsert_lead("L2", db_path=db)
+    deal_id = deal_repo.upsert_deal("L2", lead_id=lead_id, db_path=db)
+    deal_repo.transition(deal_id, DealState.QUALIFIED, db_path=db)
+    assert client.post(f"/api/deals/{deal_id}/kill").json()["status"] == "killed"
+    assert deal_repo.get_deal(deal_id, db).state is DealState.DISQUALIFIED
+
+
+def test_delete_deal_removes_it_entirely(client, db):
+    deal_id = _needs_human_deal(db)
+    assert client.delete(f"/api/deals/{deal_id}").json()["status"] == "deleted"
+    assert client.get(f"/api/deals/{deal_id}").status_code == 404
+    assert client.delete(f"/api/deals/{deal_id}").status_code == 404
+
+
+# --- Leads page ------------------------------------------------------------
+
+
+def test_leads_api_lists_leads_with_listing_detail(client, db):
+    lead_repo.upsert_lead("L1", db_path=db)
+    rows = client.get("/api/leads").json()
+    assert any(r["title"] == "Sea Villa" and r["listing_id"] == "L1" for r in rows)
+
+
+def test_leads_page_renders_the_board(client, db):
+    lead_repo.upsert_lead("L1", db_path=db)
+    body = client.get("/leads").text
+    assert "Sea Villa" in body
+    assert "Leads" in body
+
+
+def test_lead_detail_page_shows_booking_context(client, db):
+    from app import portals
+
+    lead_id = lead_repo.upsert_lead("L1", db_path=db)
+    portals.save_context(
+        "L1", "booking", {"rating": 9.1, "review_excerpts": ["Superb host"]},
+        external_url="https://booking.com/x", match_confidence=0.92, db_path=db,
+    )
+    body = client.get(f"/leads/{lead_id}").text
+    assert "Sea Villa" in body
+    assert "Superb host" in body
+
+
+def test_missing_lead_detail_is_404(client):
+    assert client.get("/leads/9999").status_code == 404
+
+
+# --- Portal context worker handler -----------------------------------------
+
+
+def test_pull_portal_context_saves_a_confident_match(db):
+    from app import portals
+    from app.jobs import JobType
+    from app.models import Job, JobStatus
+
+    worker = Worker(db_path=db, role="office")
+    worker._portal_fetcher = lambda q: {
+        "title": "Sea Villa",
+        "location": "Goa, India",
+        "guests": 0,
+        "rating": 9.0,
+        "reviews": ["Lovely"],
+        "url": "https://booking.com/x",
+    }
+    job = Job(
+        id=1,
+        type=JobType.PULL_PORTAL_CONTEXT,
+        payload={"listing_id": "L1", "portal": "booking"},
+        status=JobStatus.LEASED,
+    )
+    assert worker._pull_portal_context(job)["status"] == "saved"
+    assert portals.get_context_for_listing("L1", db)[0]["payload"]["rating"] == 9.0
+
+
+def test_pull_portal_context_is_a_noop_without_a_fetcher(db):
+    from app import portals
+    from app.jobs import JobType
+    from app.models import Job, JobStatus
+
+    worker = Worker(db_path=db, role="office")  # _portal_fetcher stays None
+    job = Job(
+        id=1,
+        type=JobType.PULL_PORTAL_CONTEXT,
+        payload={"listing_id": "L1", "portal": "booking"},
+        status=JobStatus.LEASED,
+    )
+    assert worker._pull_portal_context(job)["status"] == "no_context"
+    assert portals.get_context_for_listing("L1", db) == []
+
+
+def test_pull_portal_context_skips_a_weak_match(db):
+    from app import portals
+    from app.jobs import JobType
+    from app.models import Job, JobStatus
+
+    worker = Worker(db_path=db, role="office")
+    worker._portal_fetcher = lambda q: {"title": "Totally Different Place", "location": "Berlin"}
+    job = Job(
+        id=1,
+        type=JobType.PULL_PORTAL_CONTEXT,
+        payload={"listing_id": "L1", "portal": "booking"},
+        status=JobStatus.LEASED,
+    )
+    assert worker._pull_portal_context(job)["status"] == "low_confidence"
+    assert portals.get_context_for_listing("L1", db) == []

@@ -68,6 +68,23 @@ button { background:#2f6f4f; color:#fff; border:0; border-radius:7px;
 button:hover { filter:brightness(1.15); }
 button.ghost { background:#242835; }
 button.danger { background:#6b2b2b; }
+.drawer { margin:2rem 0; border:1px solid #2a2f3a; border-radius:10px; padding:0 1.1rem; }
+.drawer > summary { cursor:pointer; padding:1rem 0; font-weight:600; color:#9aa4b2; list-style:none; }
+.drawer > summary::-webkit-details-marker { display:none; }
+.drawer > summary::before { content:"\\25B8 "; }
+.drawer[open] > summary::before { content:"\\25BE "; }
+.linkbtn { display:inline-flex; align-items:center; background:#242835; color:#e6e6e6;
+           text-decoration:none; border-radius:7px; padding:.6rem 1.1rem; font-weight:600; }
+.linkbtn:hover { filter:brightness(1.15); }
+.nav { display:flex; gap:.4rem; flex-wrap:wrap; margin:0 0 1.25rem; }
+.navlink { display:inline-flex; align-items:center; background:#171a21; color:#c5cbe0;
+           text-decoration:none; border:1px solid #242835; border-radius:999px;
+           padding:.4rem .85rem; font-size:.85rem; font-weight:600; }
+.navlink.on { background:#2f6f4f; color:#fff; border-color:#2f6f4f; }
+.navlink:hover { filter:brightness(1.15); }
+td.actions { white-space:nowrap; }
+td.actions button { padding:.35rem .7rem; font-size:.8rem; margin-right:.35rem; }
+td.actions button:last-child { margin-right:0; }
 .feed { background:#171a21; border:1px solid #242835; border-radius:10px;
         max-height:340px; overflow-y:auto; font:12.5px/1.6 ui-monospace,monospace; }
 .feed div { padding:.3rem .9rem; border-bottom:1px solid #1d212b; white-space:pre-wrap; }
@@ -78,6 +95,32 @@ button.danger { background:#6b2b2b; }
 .message-card { margin:.6rem 0; }
 .message-card summary { cursor:pointer; font-weight:600; }
 .message-draft { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+.loops { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+.loop { background:#12151c; border:1px solid #242835; border-radius:12px; padding:1rem; }
+.loop h3 { margin:0 0 .6rem; font-size:.8rem; text-transform:uppercase;
+           letter-spacing:.06em; color:#7aa2ff; }
+.strip { display:flex; gap:.6rem; flex-wrap:wrap; margin:1rem 0 .25rem; }
+.pill { display:inline-flex; align-items:center; gap:.5rem; background:#171a21;
+        border:1px solid #242835; border-radius:999px; padding:.5rem 1rem; }
+.pill b { font-weight:700; font-size:1.05rem; }
+.pill .k { color:#8b93a7; font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; }
+.pill.hot { border-color:#2f6f4f; background:#12211a; } .pill.hot b { color:#4ade80; }
+.pill.warn { border-color:#6b5326; background:#211d12; } .pill.warn b { color:#ffcf8b; }
+.pill.off { border-color:#6b2b2b; background:#211414; } .pill.off b { color:#ff6b6b; }
+.feed .dot { display:inline-block; width:.5rem; height:.5rem; border-radius:50%;
+        margin-right:.5rem; vertical-align:middle; background:#4ade80; }
+.feed .dot.leased { background:#ffcf8b; }
+.feed .dot.failed, .feed .dot.cancelled { background:#ff8b8b; }
+.feed .dot.pending { background:#5c6479; }
+@media (max-width: 720px) {
+  body { padding:1rem; }
+  h1 { font-size:1.35rem; }
+  .loops { grid-template-columns:1fr; }
+  .cards, .funnel { gap:.5rem; }
+  .card { min-width:calc(50% - .5rem); flex:1; }
+  .row { gap:.5rem; } .row button { flex:1 1 auto; padding:.7rem .8rem; }
+  .strip { gap:.5rem; } .pill { flex:1 1 calc(50% - .5rem); justify-content:space-between; }
+}
 """
 
 
@@ -105,73 +148,61 @@ def _cards(brief: dict) -> str:
     </div>"""
 
 
+def _nav(current: str) -> str:
+    """Page links. The dashboard itself is only the stats."""
+    items = (
+        ("/", "Stats"),
+        ("/messages", "Messages"),
+        ("/attention", "Needs a human"),
+        ("/ready", "Ready to book"),
+        ("/loops", "Loops"),
+        ("/logs", "Logs"),
+        ("/leads", "Leads"),
+    )
+    links = "".join(
+        f'<a class="navlink{" on" if href == current else ""}" href="{href}">{label}</a>'
+        for href, label in items
+    )
+    return f'<nav class="nav">{links}</nav>'
+
+
 def _controls(sending_enabled: bool) -> str:
     toggle = (
         '<button class="danger" onclick="post(\'/api/kill-switch/freeze\')">Freeze sending</button>'
         if sending_enabled
         else '<button onclick="post(\'/api/kill-switch/resume\')">Resume sending</button>'
     )
-    return f"""
-    <div class="row" style="margin-top:1.25rem">
-      {toggle}
-      <button class="ghost" onclick="post('/api/jobs/sync-inbox')">Sync inbox</button>
-      <button class="ghost" onclick="post('/api/campaigns/0/tick')">Plan work now</button>
-      <button class="ghost" onclick="post('/api/jobs/retry-failed').then(()=>location.reload())">Retry failed jobs</button>
-      <button class="ghost" onclick="location.reload()">Refresh</button>
-    </div>"""
+    return f'<div class="row" style="margin-top:1.25rem">{toggle}</div>'
 
 
-def _campaign_form(campaigns: list, suggested: list[str]) -> str:
-    if campaigns:
-        rows = "".join(
-            f"<tr><td>{_e(c.name)}</td><td>{_e(c.window_start)} \u2192 {_e(c.window_end)}</td>"
-            f"<td>{_e(c.origin)}</td><td>{_e(c.status.value)}</td>"
-            f"<td><a href='/api/campaigns/{c.id}/itinerary'>Itinerary</a></td></tr>"
-            for c in campaigns
-        )
+def _office_panel(campaigns: list) -> str:
+    """Read-only view of the standing office. There is no form to fill in.
+
+    The office proposes places, researches them, drafts messages and negotiates
+    on its own. A human never seeds a destination list, so this only reports
+    what is already running.
+    """
+    note = (
+        '<p class="hint">The standing office runs itself: it proposes new places '
+        "all over India and abroad, researches them, drafts the outreach and "
+        "negotiates \u2014 no dates, no destination list, nothing to set up. You only "
+        "step in to pay, to sign back in, or when a host asks for something the "
+        "rules will not allow.</p>"
+    )
+    if not campaigns:
         return (
-            "<table><tr><th>Campaign</th><th>Window</th><th>From</th><th>Status</th>"
-            f"<th></th></tr>{rows}</table>"
-            '<p class="hint">The worker is already planning against these. '
-            "Add another below if you want a second trip running in parallel.</p>"
-            + _new_campaign_panel(suggested, collapsed=True)
+            '<p class="empty">Starting up \u2014 the office will appear here the moment '
+            "a worker comes online.</p>" + note
         )
-    return _new_campaign_panel(suggested, collapsed=False)
-
-
-def _new_campaign_panel(suggested: list[str], collapsed: bool) -> str:
-    places = "\n".join(suggested)
-    panel = f"""
-    <div class="panel" id="campaign-panel" {'style="display:none"' if collapsed else ''}>
-      <div class="row">
-        <div class="field"><label>Name</label>
-          <input id="c-name" placeholder="Winter tour"></div>
-        <div class="field"><label>From</label>
-          <input id="c-origin" placeholder="Delhi"></div>
-      </div>
-      <div class="row">
-        <div class="field"><label>Window start</label>
-          <input id="c-start" placeholder="2026-11"></div>
-        <div class="field"><label>Window end</label>
-          <input id="c-end" placeholder="2027-02"></div>
-        <div class="field"><label>Nights per stay</label>
-          <input id="c-nights" type="number" value="7"></div>
-        <div class="field"><label>Guests</label>
-          <input id="c-guests" type="number" value="2"></div>
-      </div>
-      <label>Destinations to consider \u2014 one per line</label>
-      <textarea id="c-places" placeholder="Goa, India&#10;Gokarna, Karnataka">{_e(places)}</textarea>
-      <p class="hint">These are candidates, not a plan. The Scout researches each
-        one and the Router decides which make the route, and in which month.</p>
-      <button onclick="createCampaign()">Create campaign &amp; start work</button>
-    </div>"""
-    if collapsed:
-        return (
-            '<button class="ghost" style="margin-top:.75rem" '
-            "onclick=\"document.getElementById('campaign-panel').style.display='block'\">"
-            "New campaign</button>" + panel
-        )
-    return panel
+    rows = "".join(
+        f"<tr><td>{_e(c.name)}</td><td>{_e(c.goal)}</td><td>{_e(c.status.value)}</td>"
+        f"<td><a href='/api/campaigns/{c.id}/itinerary'>Itinerary</a></td></tr>"
+        for c in campaigns
+    )
+    return (
+        "<table><tr><th>Office</th><th>Goal</th><th>Status</th><th></th></tr>"
+        f"{rows}</table>" + note
+    )
 
 
 def _funnel(counts: dict) -> str:
@@ -199,6 +230,61 @@ def _activity(records: list) -> str:
     return f'<div class="feed">{"".join(rows)}</div>'
 
 
+def _status_strip(brief: dict) -> str:
+    """The four things worth a glance on a phone: are we sending, how much
+    budget is left, and how many items are actually waiting on the human."""
+    budget = brief["budget"]
+    queues = brief["queues"]
+    ready = len(queues.get("ready_to_book", []))
+    needs = len(queues.get("needs_human", []))
+    sending = budget["sending_enabled"]
+
+    def pill(value, key, cls="") -> str:
+        return f'<span class="pill {cls}"><b>{_e(value)}</b><span class="k">{_e(key)}</span></span>'
+
+    return (
+        '<div class="strip">'
+        + pill("LIVE" if sending else "FROZEN", "sending", "hot" if sending else "off")
+        + pill(f"{budget['remaining']}/{budget['max']}", "sends left")
+        + pill(ready, "ready to book", "hot" if ready else "")
+        + pill(needs, "needs you", "warn" if needs else "")
+        + "</div>"
+    )
+
+
+_DOT_STATUSES = frozenset({"leased", "failed", "cancelled", "pending"})
+
+
+def _loop_feed(records: list) -> str:
+    """One loop's recent activity, derived from the durable job record."""
+    if not records:
+        return '<p class="empty">Nothing yet.</p>'
+    rows = []
+    for r in records:
+        status = str(r.get("status", ""))
+        cls = "err" if status in ("failed", "cancelled") else "warn" if status == "leased" else ""
+        dot = status if status in _DOT_STATUSES else ""
+        stamp = _e(str(r.get("when", "")))[11:19]
+        rows.append(
+            f'<div><span class="dot {dot}"></span><span class="t">{stamp}</span>  '
+            f'<span class="s">{_e(r.get("label", ""))}</span>  '
+            f'<span class="{cls}">{_e(str(r.get("detail", "")))}</span></div>'
+        )
+    return f'<div class="feed">{"".join(rows)}</div>'
+
+
+def _loops(office: list, courier: list) -> str:
+    """Office and Courier side by side, stacking on a phone."""
+    return (
+        '<div class="loops">'
+        '<div class="loop"><h3>Office \u2014 plans &amp; writes</h3>'
+        f"{_loop_feed(office)}</div>"
+        '<div class="loop"><h3>Courier \u2014 sends &amp; negotiates</h3>'
+        f"{_loop_feed(courier)}</div>"
+        "</div>"
+    )
+
+
 def _ready_table(rows: list) -> str:
     if not rows:
         return '<p class="empty">Nothing waiting on you.</p>'
@@ -218,14 +304,25 @@ def _ready_table(rows: list) -> str:
 
 def _needs_human_table(rows: list) -> str:
     if not rows:
-        return '<p class="empty">No blocked deals.</p>'
-    body = "".join(
-        f"<tr><td>{_e(r['host'])}</td><td>{_e(r['place'])}</td>"
-        f"<td>{_e(r['reason'])}</td>"
-        f"<td><a href=\"{_e(r['url'])}\" target=\"_blank\" rel=\"noopener\">Open</a></td></tr>"
-        for r in rows
+        return '<p class="empty">No live threads need you.</p>'
+    body = ""
+    for r in rows:
+        did = r["deal_id"]
+        actions = (
+            f'<button class="ghost" onclick="dealAction({did},\'retry\')">Retry</button>'
+            f'<button class="ghost" onclick="dealAction({did},\'kill\')">Kill</button>'
+            f'<button class="danger" onclick="dealDelete({did})">Delete</button>'
+        )
+        body += (
+            f"<tr><td>{_e(r['host'])}</td><td>{_e(r['place'])}</td>"
+            f"<td>{_e(r['reason'])}</td>"
+            f"<td><a href=\"{_e(r['url'])}\" target=\"_blank\" rel=\"noopener\">Open</a></td>"
+            f'<td class="actions">{actions}</td></tr>'
+        )
+    return (
+        "<table><tr><th>Host</th><th>Place</th><th>Why</th><th></th>"
+        f"<th>Actions</th></tr>{body}</table>"
     )
-    return f"<table><tr><th>Host</th><th>Place</th><th>Why</th><th></th></tr>{body}</table>"
 
 
 def _prompt_table(rows: list) -> str:
@@ -289,86 +386,282 @@ async function post(url, body) {
   if (!r.ok) { alert('Failed: ' + await r.text()); return null; }
   return r.json();
 }
-async function createCampaign() {
-  const val = id => document.getElementById(id).value.trim();
-  if (!val('c-name')) { alert('Give the campaign a name.'); return; }
-  const places = val('c-places').split('\\n').map(s => s.trim()).filter(Boolean);
-  const res = await post('/api/campaigns', {
-    name: val('c-name'), origin: val('c-origin'),
-    window_start: val('c-start'), window_end: val('c-end'),
-    stay_nights: parseInt(val('c-nights') || '7'),
-    guests: parseInt(val('c-guests') || '2'),
-    places: places
-  });
-  if (res) location.reload();
+// Needs-a-human row actions.
+async function dealAction(id, verb) {
+  if (await post('/api/deals/' + id + '/' + verb) !== null) location.reload();
 }
-// Pause auto-refresh while typing so the form is never wiped mid-edit.
-let typing = false;
-document.addEventListener('input', () => { typing = true; });
+async function dealDelete(id) {
+  if (!confirm('Delete this deal permanently?')) return;
+  const r = await fetch('/api/deals/' + id, {method: 'DELETE'});
+  if (!r.ok) { alert('Failed: ' + await r.text()); return; }
+  location.reload();
+}
+// The office runs itself, so the dashboard is read-only: just keep it fresh,
+// but never reload while a message card is open for reading.
 setInterval(() => {
-  if (!typing && !document.querySelector('.message-card[open]')) location.reload();
+  if (!document.querySelector('.message-card[open]')) location.reload();
 }, REFRESH_MS);
 """
 
 
-def render_dashboard(
-    brief: dict,
-    *,
-    activity: list = (),
-    campaigns: list = (),
-    suggested_places: list = (),
-) -> str:
-    """Render the whole control surface as a standalone HTML page."""
-    alerts = "".join(f'<div class="alert">{_e(a)}</div>' for a in brief["anomalies"])
-    act = brief["activity"]
-    queues = brief["queues"]
-    jobs = brief["jobs"]
-    job_cards = "".join(
+def _job_cards(jobs: dict) -> str:
+    cards = "".join(
         f'<div class="card"><div class="n">{v}</div><div class="l">{_e(k)}</div></div>'
         for k, v in sorted(jobs.items())
-    ) or '<p class="empty">Queue is empty.</p>'
+    )
+    return f'<div class="cards">{cards}</div>' if cards else '<p class="empty">Queue is empty.</p>'
 
+
+def render_dashboard(brief: dict) -> str:
+    """The stats page: rates, pipeline, queue depth, and spend. Nothing else."""
+    alerts = "".join(f'<div class="alert">{_e(a)}</div>' for a in brief["anomalies"])
+    act = brief["activity"]
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Airbnb Automate</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>{_STYLE}</style></head>
 <body>
+  {_nav("/")}
   <h1>Airbnb Automate</h1>
   <div class="sub">Last 24h: {act['messages_sent']} sent,
     {act['host_replies']} replies, {act['messages_blocked']} blocked
     &middot; auto-refreshes every {REFRESH_SECONDS}s</div>
 
   {alerts}
-  {_cards(brief)}
+  {_status_strip(brief)}
   {_controls(brief['budget']['sending_enabled'])}
 
-  <h2>Campaigns</h2>
-  {_campaign_form(list(campaigns), list(suggested_places))}
-
-  <h2>Live activity</h2>
-  {_activity(list(activity))}
-
-  <h2>Messages — drafts and delivery</h2>
-  {_message_cards(brief.get('messages', []))}
-
+  <h2>At a glance</h2>
+  {_cards(brief)}
   <h2>Pipeline</h2>
   {_funnel(brief['funnel'])}
-
-  <h2>Ready to book &mdash; needs your card</h2>
-  {_ready_table(queues['ready_to_book'])}
-
-  <h2>Needs a human</h2>
-  {_needs_human_table(queues['needs_human'])}
-
   <h2>Job queue</h2>
-  <div class="cards">{job_cards}</div>
-
+  {_job_cards(brief['jobs'])}
   <h2>Prompt performance</h2>
   {_prompt_table(brief['prompt_performance'])}
-
   <h2>Agent cost</h2>
   {_cost_table(brief['cost_by_agent'])}
 
 <script>{_SCRIPT.replace('REFRESH_MS', str(REFRESH_SECONDS * 1000))}</script>
 </body></html>"""
+
+
+def render_messages(rows: list) -> str:
+    """Drafts and whether each one was delivered."""
+    header = (
+        "<h1>Messages</h1>"
+        f'<div class="sub">{len(rows)} draft(s) and delivery result(s)</div>'
+        "<h2>Messages — drafts and delivery</h2>"
+    )
+    return _shell("Messages — Airbnb Automate", header + _message_cards(rows), current="/messages")
+
+
+def render_attention(rows: list) -> str:
+    """Deals a person has to handle."""
+    header = (
+        "<h1>Needs a human</h1>"
+        f'<div class="sub">{len(rows)} waiting</div>'
+    )
+    return _shell("Needs a human — Airbnb Automate", header + _needs_human_table(rows), current="/attention")
+
+
+def render_ready(rows: list) -> str:
+    """Deals that are agreed and waiting on a card."""
+    header = (
+        "<h1>Ready to book</h1>"
+        f'<div class="sub">{len(rows)} need your card</div>'
+    )
+    return _shell(
+        "Ready to book — Airbnb Automate",
+        header + _ready_table(rows),
+        current="/ready",
+    )
+
+
+def render_loops(office: list, courier: list, campaigns: list) -> str:
+    """What the office and the courier are doing, plus the standing office."""
+    body = (
+        "<h1>Loops</h1>"
+        '<div class="sub">What is running now</div>'
+        "<h2>Loops — what's running now</h2>"
+        f"{_loops(list(office), list(courier))}"
+        "<h2>Standing office</h2>"
+        f"{_office_panel(list(campaigns))}"
+    )
+    return _shell("Loops — Airbnb Automate", body, current="/loops")
+
+
+def render_logs(records: list) -> str:
+    """Recent worker log lines."""
+    body = (
+        "<h1>Logs</h1>"
+        '<div class="sub">Recent agent output</div>'
+        "<h2>Logs</h2>"
+        f"{_activity(list(records))}"
+    )
+    return _shell("Logs — Airbnb Automate", body, current="/logs")
+
+
+def _shell(title: str, body: str, *, current: str = "") -> str:
+    """A standalone page using the same style and auto-refresh as the dashboard."""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>{_e(title)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>{_STYLE}</style></head>
+<body>
+{_nav(current)}
+{body}
+<script>{_SCRIPT.replace('REFRESH_MS', str(REFRESH_SECONDS * 1000))}</script>
+</body></html>"""
+
+
+def _lead_status(row: dict) -> str:
+    """A short, human label for where a lead is: sent, drafted, blocked, or new."""
+    msg = row.get("last_message_status")
+    state = row.get("deal_state") or ""
+    if msg in ("sent", "sending"):
+        return "contacted"
+    if msg == "blocked":
+        return "blocked (retrying)"
+    if msg == "pending":
+        return "drafted"
+    if state in ("negotiating", "host_replied", "terms_agreed", "ready_to_book"):
+        return state.replace("_", " ")
+    return "new"
+
+
+def render_leads(rows: list) -> str:
+    """The dedicated Leads page: every lead the office has found, best first."""
+    if not rows:
+        table = (
+            '<p class="empty">No leads yet — the office is still discovering and '
+            "enriching. This fills in on its own.</p>"
+        )
+    else:
+        body = ""
+        for r in rows:
+            score = r.get("collab_fit_score")
+            score_txt = f"{score:.2f}" if score is not None else "—"
+            enriched = "yes" if r.get("detail_scraped_at") else "no"
+            price = r.get("price_per_night") or 0
+            cur = r.get("currency") or ""
+            title = r.get("title") or r.get("listing_id") or "listing"
+            body += (
+                f"<tr><td><a href=\"/leads/{r['lead_id']}\">{_e(title)}</a></td>"
+                f"<td>{_e(r.get('location') or '')}</td>"
+                f"<td>{_e(cur)} {int(price):,}</td>"
+                f"<td>{_e(r.get('rating') or '')}</td>"
+                f"<td>{_e(r.get('host_name') or '')}</td>"
+                f"<td>{_e(score_txt)}</td>"
+                f"<td>{_e(enriched)}</td>"
+                f"<td>{_e(_lead_status(r))}</td></tr>"
+            )
+        table = (
+            "<table><tr><th>Listing</th><th>Location</th><th>Price/night</th>"
+            "<th>Rating</th><th>Host</th><th>Fit</th><th>Enriched</th>"
+            f"<th>Status</th></tr>{body}</table>"
+        )
+    header = (
+        '<h1>Leads</h1>'
+        f'<div class="sub">{len(rows)} lead(s) &middot; '
+        '<a href="/">&larr; back to dashboard</a></div>'
+    )
+    return _shell("Leads — Airbnb Automate", header + table, current="/leads")
+
+
+def _portal_context_block(context: list) -> str:
+    """Render read-only corroboration pulled from other portals, if any."""
+    if not context:
+        return (
+            '<p class="empty">No external context yet. The office pulls Booking.com '
+            "corroboration for enriched leads on its own.</p>"
+        )
+    blocks = ""
+    for c in context:
+        payload = c.get("payload") or {}
+        conf = c.get("match_confidence") or 0
+        reviews = payload.get("review_excerpts") or []
+        amenities = payload.get("amenities") or []
+        price_band = payload.get("price_band") or ""
+        rating = payload.get("rating")
+        bits = ""
+        if rating:
+            bits += f"<p><b>Rating:</b> {_e(rating)}</p>"
+        if price_band:
+            bits += f"<p><b>Price band:</b> {_e(price_band)}</p>"
+        if amenities:
+            bits += f"<p><b>Amenities:</b> {_e(', '.join(map(str, amenities[:12])))}</p>"
+        if reviews:
+            items = "".join(f"<li>{_e(rv)}</li>" for rv in reviews[:5])
+            bits += f"<p><b>Guest reviews:</b></p><ul>{items}</ul>"
+        url = c.get("external_url") or ""
+        link = f' &middot; <a href="{_e(url)}" target="_blank" rel="noopener">source</a>' if url else ""
+        blocks += (
+            f'<div class="panel" style="margin:.6rem 0">'
+            f"<h3>{_e(str(c.get('portal', 'portal')).title())} "
+            f'<span class="hint">(match {int(conf * 100)}%{link})</span></h3>'
+            f"{bits or '<p class=empty>No detail captured.</p>'}</div>"
+        )
+    return blocks
+
+
+def render_lead_detail(lead, listing, context: list) -> str:
+    """One lead in full: listing, the office's enrichment, and portal context."""
+    li_title = getattr(listing, "title", "") or (getattr(lead, "listing_id", "") or "Lead")
+    location = getattr(listing, "location", "") or ""
+    host = getattr(listing, "host_name", "") or ""
+    price = getattr(listing, "price_per_night", 0) or 0
+    currency = getattr(listing, "currency", "") or ""
+    rating = getattr(listing, "rating", 0) or 0
+    url = getattr(listing, "url", "") or ""
+    score = getattr(lead, "collab_fit_score", None)
+    score_txt = f"{score:.2f}" if score is not None else "not scored yet"
+
+    summary = (
+        f'<div class="cards">'
+        f'<div class="card hero"><div class="n">{_e(score_txt)}</div>'
+        '<div class="l">Collab fit</div></div>'
+        f'<div class="card"><div class="n">{_e(currency)} {int(price):,}</div>'
+        '<div class="l">Price / night</div></div>'
+        f'<div class="card"><div class="n">{_e(rating)}</div>'
+        '<div class="l">Rating</div></div>'
+        f'<div class="card"><div class="n">{_e(host or "—")}</div>'
+        '<div class="l">Host</div></div>'
+        "</div>"
+    )
+
+    def section(title: str, value) -> str:
+        if not value:
+            return ""
+        if isinstance(value, (list, tuple)):
+            inner = "".join(f"<li>{_e(v)}</li>" for v in value)
+            content = f"<ul>{inner}</ul>"
+        else:
+            content = f'<p class="message-draft">{_e(value)}</p>'
+        return f"<h2>{_e(title)}</h2>{content}"
+
+    enrichment = (
+        section("Description", getattr(lead, "description", ""))
+        + section("House rules", getattr(lead, "house_rules", ""))
+        + section("Amenities", getattr(lead, "amenities", []))
+        + section("Guest reviews", getattr(lead, "review_excerpts", []))
+        + section("Host bio", getattr(lead, "host_bio", ""))
+    ) or '<p class="empty">Not enriched yet — the detail page has not been scraped.</p>'
+
+    link = f' &middot; <a href="{_e(url)}" target="_blank" rel="noopener">open on Airbnb</a>' if url else ""
+    header = (
+        f"<h1>{_e(li_title)}</h1>"
+        f'<div class="sub">{_e(location)}{link} &middot; '
+        '<a href="/leads">&larr; all leads</a></div>'
+    )
+    body = (
+        header
+        + summary
+        + "<h2>What the office knows</h2>"
+        + enrichment
+        + "<h2>External context</h2>"
+        + _portal_context_block(context)
+    )
+    return _shell(f"{li_title} — Lead", body, current="/leads")

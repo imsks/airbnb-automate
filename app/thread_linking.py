@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 _THREAD_URL_RE = re.compile(
     r"^/(?:hosting/|guest/)?(?:(?:messages|messaging)/(?:thread/)?|inbox/)(\d+)(?:/|$)"
 )
+#: Inbox URLs now look like ``/hosting/inbox/folder/all/thread/123``.
+_THREAD_SEGMENT_RE = re.compile(r"/thread/(\d+)(?:/|$)")
 
 #: Below this, a fuzzy match is treated as no match at all.
 MATCH_THRESHOLD = 0.72
@@ -38,7 +40,7 @@ def extract_thread_id(url: str) -> Optional[str]:
     if not url:
         return None
     parsed = urlsplit(url)
-    match = _THREAD_URL_RE.match(parsed.path)
+    match = _THREAD_URL_RE.match(parsed.path) or _THREAD_SEGMENT_RE.search(parsed.path)
     if match:
         return match.group(1)
     thread_id = parse_qs(parsed.query).get("thread_id", [""])[0]

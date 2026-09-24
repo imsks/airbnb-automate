@@ -21,8 +21,13 @@ def get_db_path() -> str:
 
 
 def get_browser_state_path() -> str:
-    """Get the path for storing browser state (cookies, session) for Airbnb login."""
-    state_path = BASE_DIR / "data" / "browser_state.json"
+    """Cookie backup, stored beside the database.
+
+    ``make login`` writes ``browser_state.json`` into the same directory as the
+    SQLite file. In Docker that directory is the shared ``/data`` volume, so
+    the courier can reuse the session instead of opening a login dialog.
+    """
+    state_path = Path(get_db_path()).parent / "browser_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
     return str(state_path)
 
@@ -79,7 +84,7 @@ def get_chrome_cdp_url() -> Optional[str]:
 
 def get_outreach_max_sends_per_window() -> int:
     """Max successful host messages per sliding time window (global across all searches)."""
-    raw = (os.getenv("OUTREACH_MAX_SENDS_PER_WINDOW") or "5").strip()
+    raw = (os.getenv("OUTREACH_MAX_SENDS_PER_WINDOW") or "20").strip()
     return max(1, int(raw))
 
 
@@ -91,7 +96,7 @@ def get_outreach_rate_window_seconds() -> int:
 
 def get_outreach_inter_message_delay_seconds() -> float:
     """Minimum pause between each outreach attempt (success or failure), in seconds."""
-    raw = (os.getenv("OUTREACH_INTER_MESSAGE_DELAY_SECONDS") or "120").strip()
+    raw = (os.getenv("OUTREACH_INTER_MESSAGE_DELAY_SECONDS") or "45").strip()
     return max(0.0, float(raw))
 
 
@@ -193,6 +198,17 @@ def get_allow_handles_before_booking() -> bool:
     """
     raw = (os.getenv("ALLOW_HANDLES_BEFORE_BOOKING") or "").strip().lower()
     return raw in ("1", "true", "yes")
+
+
+def get_telegram_credentials() -> tuple[Optional[str], Optional[str]]:
+    """Bot token and chat id for phone pings, or ``(None, None)`` when unset.
+
+    Notifications are opt-in: with no credentials the notifier is a silent no-op,
+    so the dashboard remains the source of truth and nothing tries the network.
+    """
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    return (token or None, chat_id or None)
 
 
 def get_blocked_message_terms() -> dict:
